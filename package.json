@@ -42,7 +42,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": ">=4.0.2 <5",
-    "@deepseek-ai/dsh-storage-domain": ">=0.2.0-rc.2 <0.3"
+    "@deepseek-ai/dsh-storage-domain": "0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.1 || 0.2.1-rc.2 || >=0.3.0 <1.0.0"
   },
   "dependencies": {
     "zod": "^3.25.76"

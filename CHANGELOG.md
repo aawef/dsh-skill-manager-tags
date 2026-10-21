@@ -36,8 +36,23 @@ import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 
 ### 改动
 
-`package.json`：`@deepseek-ai/dsh-storage-domain` 从 `dependencies` 移到 `peerDependencies`
-（范围 `>=0.2.0-rc.2 <0.3`），`dependencies` 只剩 `zod`。
+`package.json`：`@deepseek-ai/dsh-storage-domain` 从 `dependencies` 移到 `peerDependencies`，
+`dependencies` 只剩 `zod`。**范围必须枚举具体的 rc 版本**，不能写成 `>=0.2.0-rc.2 <0.3`。
+
+> **为什么不能用范围**：npm semver 有一条冷门规则 —— 候选版本是 prerelease 时，只有当某个
+> 比较器的 `major.minor.patch` 与它**完全相等**，才允许匹配。所以 `>=0.2.0-rc.2 <0.3` 对
+> `0.2.1-rc.2` 判定为**不满足**（比较器 tuple 是 0.2.0 与 0.3.0，候选是 0.2.1）。实测：
+>
+> | peer 范围 | 对 `0.2.1-rc.2` |
+> | --- | --- |
+> | `>=0.2.0-rc.2 <0.3` | ✗ |
+> | `>=0.2.0-rc.1 <0.3` | ✗ |
+> | `>=0.1.5-rc.2 <0.3.0` | ✗ |
+> | `^0.2.1-rc.1` | ✓（只能覆盖 0.2.1.x） |
+> | `0.2.0-rc.1 \|\| 0.2.0-rc.2 \|\| 0.2.1-rc.1 \|\| 0.2.1-rc.2 \|\| >=0.3.0 <1.0.0` | ✓ |
+>
+> 生态里不少插件写的 `>=0.1.5-rc.2 <0.3.0` 之类其实一直是"不满足"状态，只是
+> `autoInstallPeers: false` 下 pnpm 不阻塞安装，只在 `pnpm peers check` 里列成 warn。
 
 这也与 DSH 生态的惯例一致 —— 对照 `dsh-auto-memory`、`dsh-rewind-plugin`、`dsh-ops`，
 它们的 `@deepseek-ai/*` 全部是 peerDependency，只有需要独立演进的通用库（`schemastery`、
@@ -46,7 +61,10 @@ import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
 ### 验证
 
 - `require.resolve("@deepseek-ai/dsh-storage-domain", {paths:[<插件>/lib]})` → 宿主同版本 `0.2.1-rc.2`
+- peer 范围用 `semver.satisfies("0.2.1-rc.2", <范围>)` 逐个比对，确认 0.2.0-rc.1 / 0.2.0-rc.2 /
+  0.2.1-rc.1 / 0.2.1-rc.2 / 0.3.x 全部 PASS
 - `pnpm-lock.yaml` 里该包只剩一个版本
+- `npm test` 183/183
 - 重启 DSH 后新建工作区恢复正常
 
 ### 注意
