@@ -1,0 +1,564 @@
+# CHANGELOG
+
+## 2026-10-21 — 精简设置页：移除工作区/对话编辑器，已有标签默认折叠
+
+### 需求
+用户原话：设置页里只保留「tag 联系 skill / skill 联系 tag / 编辑标签组」三个按钮
++ 新建标签 + 已有标签列表，**删掉工作区之类的**；同时已有标签不要把标签下的所有
+skill 都列出来，**折叠起来**。
+
+### 改动（`lib/client.js`）
+1. **删掉 `WorkspaceEditor` 与 `ConversationEditor` 两个组件及其调用点**（原
+   line 1566–1720）。这两个卡片在设置页里没有使用场景 —— 真正的配置入口**已经是**
+   工作区行菜单 / 会话行菜单里的「管理标签」（那里才有 workspaceId / sessionId
+   上下文），设置页这两块只能手工填 ID，是历史遗留。
+   - `zoneOf` / `conversationRows` / `ZONE_LABEL` / `configSummary` 等纯函数**保留**：
+     双列「管理标签」浮层仍在用 `conversationRows` + `ZONE_LABEL`。
+   - 后端 `/workspaces/*`、`/conversations/*` 路由**一律未动**，浮层照常调用。
+
+2. **`TagList` 每个标签默认折叠**：行内只显示「`N` 个 Skill」计数（无关联时仍显示
+   「无 Skill 关联」且不渲染箭头），点左侧 ▸/▾ 才在下一行列出技能名。展开后的每行
+   **仍带 📁**「打开文件夹」按钮。
+   - 动机：本机 34 个标签 / 96 条链接，全展开是一堵几百行的墙，而设置页这个场景
+     只需要「有多少」和「删标签」。
+   - 展开态存在 Section state 的 `openTags`（`{tagId: boolean}`），默认 `{}`。
+
+### 测试（`tests/__page-render.mjs`，179 → 183）
+- 主页面不再渲染工作区布尔配置 / 对话编辑器（但仍渲染标题 + 三按钮 + 新建标签 + 标签列表）
+- 已有标签默认折叠：显示计数、不出现技能名、行内有 `data-skill-tag-toggle`
+- 点 ▸ 只改写被点击那个标签的 `openTags`（不整体翻转）；展开后列出技能名且保留 📁
+- 无关联技能的标签不渲染展开箭头
+
+### 同步
+`docs/preview/render-preview.mjs` 的 BASE state 去掉了 `wsId/wsDraft/convId/convWsId`
+（它们随组件一起没了），补上 `openTags` + `view`；重跑了
+`docs/preview/标签组配置-preview.html`（2769 B，已无工作区卡片）。
+
+两副本各跑一遍全绿（183/183）。`lib/client.js` 是 no-cache 加载，**刷新页面即生效**。
+
+## 2026-10-21 — 修复：「打开技能所在文件夹」点了没反应（windowsHide 让窗口不可见）
+
+### 现象
+技能行旁边的 📁 按钮点击后屏幕毫无变化，但服务端返回 `{"ok":true, ...}`，
+看不出任何错误。
+
+### 根因
+`src/reveal.js` 的 `revealInExplorer()` 给 `spawn` 传了 `windowsHide: true`。
+在 win32 上这个选项会让 **explorer 主窗口以不可见方式创建**：窗口**确实建了**
+（路径也正确），但 `IsWindowVisible` 为 `False`，用户永远看不到。
+
+实测证据（临时探测脚本，同一路径重复 4 次，结论稳定）：
+
+| spawn 变体 | 新窗口 |
+|---|---|
+| `{detached, stdio:"ignore", windowsHide:true}`（修复前） | `Visible=**False**` |
+| `{detached, stdio:"ignore"}`（修复后） | `Visible=**True**` |
+| `{}` | `Visible=True` |
+
+副作用：bug 期间每次点击都留下一个幽灵窗口，后台累积到 **35 个**资源管理器窗口
+（每个 URL 都精确指向正确的技能目录），用 `Shell.Application` COM 枚举窗口才发现
+——这也是定位到「窗口建了但不可见」的关键。已清理（剩 3 个是用户自己开的）。
+
+### 修复
+`src/reveal.js:84` 去掉 `windowsHide: true`，保留 `detached: true` +
+`stdio: "ignore"` + `unref()` —— 脱钩/不等退出是我们真正要的，可见性不该被
+这个选项顺手关掉。注释里写清了原因，避免以后又被"加回去"。
+
+新增回归测试 `tests/skilltags.test.mjs`「revealInExplorer：spawn 选项不得带
+windowsHide」，钉住 `options.windowsHide === undefined`。
+
+### 验证
+两副本各跑一遍全绿（179 tests / 179 pass，较上轮 137 增加是因为本轮统计口径
+含 harness 侧用例）。`src/reveal.js` 是 ESM，**需重启 DSH 桌面进程**才生效；
+`lib/client.js` 未改动。
+
+## 2026-10-21 — 新增：「给技能打标签」可移植手册 + 来源轴自动推导 + auto-tag 脚本
+
+### 需求
+「把如何给 skill 打标签写进一个文档，当别人安装这个插件的时候，他们的 agent
+能根据这份文档给 skill 打上标签」。硬约束：**可移植**，不能硬编码本机的
+aegis / mattpocock / office-skills 名单。
+
+### 思路
+本机此前落地的标签体系（34 标签 / 96 链接）里，领域轴和
+路由轴必须人工判断，但**来源轴是可以从 `path`/`source` 纯推导的**。把这部分抽成
+代码，剩下的写成「推导法 + 调用纪律」手册，就是别人机器上也成立的那份文档。
+
+### 新增文件
+
+| 文件 | 作用 |
+|---|---|
+| `docs/给技能打标签.md` | 完整手册：三轴设计、API 调用序列、错误对照、交付检查清单 |
+| `skills/tagging-skills/SKILL.md` | 同一份内容的**精简版**，注册成真 skill（见下） |
+| `src/domain/origin.js` | 来源轴推导：`originTagOf(skill, {home})` / `isPackageDelivered` / `safeTagName` / `defaultHome()` |
+| `src/skill-doc.js` | 读插件内 `skills/<dir>/SKILL.md`：`splitFrontmatter` / `loadBundledSkill` |
+| `tools/auto-tag.mjs` | 一键脚本（dry-run 默认；`--apply`；`--domain hints\|<file.json>`） |
+| `tools/domain-hints.mjs` | 领域轴**启发式起点**（关键词正则，非结论） |
+| `tests/{origin,auto-tag,skill-doc}.test.mjs` | 测试 127 → **137** |
+
+### 来源轴推导规则（`src/domain/origin.js`）
+
+按 `path` 从上往下匹配：
+
+1. 含 `/node_modules/<pkg>/` → 包名（`@scope/name` 保留两段）
+2. 含 `/resources/runtime/<dir>/` → 目录名
+3. `path` 为 `null` 或含 `.asar` → `builtin`
+4. 其余按 `source` 根：`<home>/.dsh/skills`→`dsh-home`；`<home>/.agents/skills`→
+   `agents-home`；项目级同名根→`project-skills`/`project-agents`；自定义根→最后一段
+
+非 `dsh-home`/`agents-home`/`project-skills`/`project-agents` 的额外共挂 `plugin`，
+于是 `<包名> * plugin` = 「只要这个包带来的技能」。
+
+`safeTagName()` 把空格与 `+ * ( )` 引号替换成 `-` —— 标签名含这些字符时表达式里
+必须加引号（`src/domain/expr.js` 的 `IDENT_STOP`），索性起名就避开。
+
+本机 96 条实测分布：`aegis` 23 / `mattpocock-skills-dsh` 25 / `@tt-a1i/archify-dsh` 1 /
+`dsh-home` 38 / `agents-home` 1 / `builtin` 8（asar 内的 `diagnose-windows-sandbox-acl`
++ office 7 个，path 不可见 → 需手工补 `office-skills`）。
+
+### 手册注册成真 skill（`lib/index.js` 第 4b 段）
+
+`apply()` 里新增：`loadBundledSkill("tagging-skills")` → `ctx.skills.register(...)`，
+包在 `ctx.effect()` 里随插件卸载注销。
+
+**为什么用 register 而不是在 `cordis.patch.yml` 里 insert 一个
+`@deepseek-ai/dsh-skill-filesystem` 行**（archify 就是那么做的）：那条路依赖宿主
+**另一个包**存在，换台机器不一定装了，insert 失败会升级成 fatal 打死桌面进程。
+`register()` 只依赖我们已经 `inject` 的 `skills` 服务（`lib/index.js` 的
+`export const inject = ["skills","agents","storageDomain","webServer"]`）。
+
+整段 self-contain：register 抛错只 warn，不冒回 cordis。已实测
+（假 ctx 让 register 抛 `boom`）`apply()` 正常返回。
+
+### auto-tag.mjs 的两个纪律
+
+1. **`/skills/tags` 的写是整体覆盖** —— 每个技能写之前先 `GET` 读回旧 `tagIds`，
+   合并后再 `POST`。直接传新标签会清掉旧标签。这也是脚本**幂等**的原因：
+   第二次跑 `tagsCreated: 0`、`writes: 0`。
+2. **同名标签创建会报错** `tag name 'X' already exists`（`src/service.js`）→
+   先读 `/state` 复用已有 `tagId`。
+
+领域轴不自动判定：`--domain hints` 只给建议（`tools/domain-hints.mjs` 的关键词
+**正则**，避免 `test` 命中 `pressure-test` 这类误判），或用
+`--domain ./map.json`（形如 `{"pdf":["pdf","translate-pdf"]}`）自带映射。
+映射文件里写了不存在的技能名会进 `unknownNames` —— 否则会被静默跳过。
+
+### 验证
+
+- 测试 127 → **137**，web 源与 desktop 副本**各跑一遍全绿**。
+- 对 11347 实跑 dry-run：96 技能，`byOrigin` 分布与上面一致，
+  `tagsCreated: 2`（已存在的 34 个标签全部复用），`unknownNames: []`。
+- 假 ctx 模拟 `apply()` → `registered skills: ['tagging-skills']`；
+  register 抛错 → apply 不崩。
+
+### 同步
+
+10 个文件已 cp 到 `C:\Users\ThinkPad\.dsh\profiles\desktop\node_modules\dsh-skill-tag`
+（**非同一物理文件，必须手动复制**），sha256 前 16 位全部 SAME。
+`lib/index.js` 是 ESM，**需重启桌面进程才生效**。
+
+## 2026-10-21 — 修复：本插件探测到的 skill 数远少于宿主（39 vs 78）
+
+### 现象
+空标签对话里模型能看到 **78** 条 skill，而本插件的 `/skills` 只返回 **39** 条。
+用户要求：「尽可能地做到 dsh 本身接收到多少 skill，本插件就能探测到多少 skill」。
+
+### 根因
+插件的列技能路径**只用**自己的 `scanSkillRoots` 扫文件系统根，从来没问过宿主的
+skills 注册表 `ctx.skills`。而宿主有相当一部分技能**根本不在任何文件系统根里** ——
+它们由插件自带的 provider 直接注册进注册表：
+
+| 来源 | 条数 | 接法 |
+|---|---|---|
+| `~/.dsh/skills` | 37 | 文件系统根（另 2 个 `kdocs.bak-*` 名字含 `.`，被宿主 `SKILL_NAME` 正则丢弃） |
+| `~/.agents/skills` | 1 | 文件系统根 |
+| `aegis/skills` | 23 | `applyFilesystemProvider({providerName:"aegis-method-pack", includeDefaultRoots:false, bundledSkillDir})` |
+| `mattpocock-skills-dsh/skills` | 25 | 自写 provider（`PACKAGED_SKILL_RANK=550`） |
+| `@tt-a1i/archify-dsh/skills` | 1 | 同样 insert 一个 filesystem provider 行 |
+
+扫盘只能看到前两行（38~39 条），后三行共 **49 条**永远看不到。
+
+模型侧的口径在 `dsh-tool-skill` 的 `agent/pre-step`：
+
+```js
+const snapshot = await ctx.skills.snapshot({
+  cwd: await ctx.workingDirectory.ensure(agent, signal),
+  signal,
+  scope: agent,          // ← 关键：宿主按 scope 决定合并哪些层
+});
+const skills = snapshot.skills.filter(isModelInvocable);
+```
+
+`dsh-skill` 的 `collectFresh` 是 `[this.layers.global, ...this.layers.chainLayers(options.scope)]`
+—— 不传 `scope` 就只有 global 层，preset / agent 层的 provider 贡献全部丢失。
+
+### 实现
+1. **新增 `createSkillDiscoverer({hostRegistry, rootsScan, agents})`**（`lib/index.js`，已导出便于测试）
+   - 先问宿主 `snapshot({cwd, scope})`（带得上 `scope` 就带）→ **权威**
+   - 自扫描只补宿主没有的名字（宿主不可用、或设置页没有 agent scope 时的兜底）
+   - 同名**以宿主为准**：宿主那份才是模型真正会加载的定义
+   - `conversationId`（= sessionId）→ 在 `agents.list()` 里找对应 agent 当 scope
+2. **`createUpstreamAdapter` 的 `snapshot` 补传 `scope`**（原先只传 `cwd`/`signal`），
+   并加**嵌套重入保护**：宿主在收集本插件自己的 provider 时若回调进 `summaries()`，
+   必须跳过宿主快照（否则 `snapshot → list() → freshen() → summaries() → snapshot` 无限递归）。
+3. **`src/api.js` 的 `listSkills` 允许 async**：`contextForConfig` / `skillContext` /
+   `resolveSkillPath` / `skillShape` / `convPayload` 全部 await 化；
+   新增 `hint = {conversationId, workspaceId}` 透传给发现器。
+
+### 测试（152 → **157 项**）
+`tests/runtime.test.mjs` +5：
+- 宿主注册表的技能优先，扫盘看不到的 provider 技能必须出现，同名以宿主为准，cwd 必须透传；
+- 给了 `conversationId` 就把对应 agent 作为 `scope` 传给宿主；找不到 agent 时**不得塞 `undefined` scope**（会破坏宿主缓存键）；
+- 宿主不可用 / 抛错 / `rootsScan` 抛错时退回自扫描，绝不外泄异常（宿主回调里抛异常 = host fatal）；
+- `createUpstreamAdapter` 的 `scope` 透传 + 嵌套重入保护；
+- **两个出口共用一份计数器**：设置页快照 → 宿主收集到本插件 per-agent provider →
+  `freshen` → 否认路径再快照，必须只发生一次宿主快照，且计数器最后归零。
+
+**变异验证**：去掉 `scope` 透传 → 红；去掉重入保护 → 红；让发现器忽略宿主 → 红。
+
+### 追加修复：否认路径的 `scope` 缺口
+
+`recomputeDenials` 算 `universe` 时 `upstream.summaries({ cwd })` 不带 `scope`
+→ agent 层独有的技能（`@michengai/dsh-skills-manager` / `dsh-skillhub` 的
+per-agent provider）进不了 universe → **永远无法被禁用**。现在
+`refreshSessionInner` → `refreshBySession(sessionId, cwd, agent)` →
+`recomputeDenials(sessionId, cwd, scope)` 把 agent 一路传下去。
+
+### 生效方式
+`src/api.js` / `lib/index.js` 是 ESM，**必须重启 DSH 桌面进程**（`lib/client.js` 才是刷新即生效）。
+
+## 2026-10-20 — 新增：聊天框「+」菜单里的「管理对话标签」入口
+
+### 需求
+「在对话聊天框的左下角的『+』里添加一个管理对话标签的入口。」
+
+### 调研（宿主 0.2.1-rc.2，源码核实）
+- 那颗「+」**不是普通按钮**：`dsh-client-ui-conversation/lib/client.js` 的 `InputBar` 里
+  `onClick: onToggleCommandMenu` → `toggleCommandMenu(keyboard.caretSpan())` →
+  `inputTriggers.toggleSource("command", {trigger:"/", query:"", ...})`，
+  即它打开的是宿主 `/` 命令菜单，候选来自 `dsh-client-ui-commands`。
+- `dsh-client-ui-commands` 的 `CommandUiRuntime`（`ctx.commandUi`）**预留了客户端贡献位**：
+  `register({name, available(session), label(), description(), icon, ui})`，
+  `ui` 两种形态：`{kind:"popup", …}` 或 `{kind:"action", run(session)}`。
+  官方插件 `dsh-client-ui-message-feedback` 就是这样挂 `/feedback` 的（`commandUi.decorate`）。
+- 因此**不需要 DOM 注入**（工作区行菜单那种做法）：走 `ctx.inject(["commandUi"], …)` +
+  `scope.effect(() => commandUi.register(...))` 即可。`action` 型被选中时先消费 token 再跑 `run`，
+  **不往输入框写字、不发消息**。
+
+### 实现（仅 `lib/client.js`）
+- 新增 `registerComposerEntry(ctx)`：注册贡献 `name:"skill-tag-manage"`、
+  `label:"管理对话标签"`、`description:"配置本对话的标签条件、技能添加与禁用"`、
+  `ui:{kind:"action", run(session) → manageSet({open:true, conversationId: session.sessionId})}`。
+  复用已有的 `manage` store 与 `shell.overlay` 浮层，因此打开的正是对话版双列界面。
+- `apply(ctx)` 末尾调用它；`ctx.inject` 不存在时静默跳过（老宿主 / 测试桩）。
+- `exports.__test` 追加 `registerComposerEntry`。
+
+### 测试（149 → **152 项**）
+- `tests/__conv-render.mjs` +3：
+  - 「+」菜单里恰好一条贡献、`name/kind/label/available` 正确（**必须是 `action`**，否则会往输入框写字）；
+  - 点它 → `manage.conversationId === "sess-9"` 且浮层渲染出「管理标签（对话）」；
+  - **没有 `commandUi` 服务时插件照常加载不抛错**（服务缺失不得打死宿主）。
+- 全量 `node --test "tests/*.test.mjs" "tests/*.mjs"` → **152 项通过**。
+
+### 兼容性
+- 仅 `lib/client.js`：**刷新页面即生效**，无需重启。
+- 与 `/skills/reveal` 的 404 是两个独立问题：那条报错是**服务端仍是旧进程**（`src/api.js` 新增路由须重启桌面进程）。
+
+## 2026-10-20 — 新增：skill 联系 tag 页 + 全局「打开技能所在文件夹」
+
+### 需求
+1. 设置页「Skill 关联」按钮改名为「tag 联系 skill」；
+2. 新增「skill 联系 tag」按钮，打开一个可编辑「某个技能拥有哪些标签」的界面；
+3. **本插件所有列出技能的位置**都加一个按钮，一点即在文件资源管理器中定位该技能文件。
+
+### 实现
+- **新增 `src/reveal.js`**（纯函数可单测）：
+  - `revealCommand(target, platform)` → win32 `explorer.exe /select,<file>` / darwin `open -R` / 其他 `xdg-open <dir>`；
+  - `assertRevealable(p)` → 非空、必须是 `.md`/`.md.disabled`、必须存在且是普通文件，否则抛带 `code` 的错误（`NO_PATH` / `NOT_SKILL_FILE` / `NOT_FOUND` / `NOT_FILE`）；
+  - `revealInExplorer(target, {platform, spawnImpl})` → `detached:true, stdio:"ignore"` 拉起并 `unref()`；`spawn` 抛错与异步 `error` 事件都被吞掉，绝不冒回宿主调用栈（历史两次 fatal 的教训）。
+  - 为什么自己做：宿主 0.2.1-rc.2 **没有**给插件暴露 shell/reveal API（全 asar 搜 `showItemInFolder`/`shell.openPath` 只命中 inspector 的 devtools chunk 与 electron-updater）；官方 `POST /open-in-app/open {app:"explorer"}` 虽然等价，但带 `connection` 服务的 Host/Origin 校验，插件不该绕。
+- **`src/api.js` 新增三条路由**：
+  - `POST /skills/reveal` `{path}` 或 `{skillName, cwd?}` → 拉起文件管理器；非法路径回 **400 + code**（不是 500），查不到技能回 404。
+  - `GET|POST /skills/tags` `{skillName}` → `{tagIds, skill:{name,path,source}, tags}`；带 `tagIds` 的 POST 是**整体覆盖**（空数组 = 删除整条连接记录）。读也接受 POST（前端只有 `apiPost` 一条通道），靠 `hasOwnProperty("tagIds")` 区分读写——空数组写入不能被误判成读。
+  - `/skills` 与两处双列载荷新增 `path` / `catalog`：`contextForConfig()` 现在返回 `{universe, candidates, catalog}`，`catalog` 是 `[{name, path, source}]`，前端据此不必二次扫描就能显示「打开文件夹」。
+- **`lib/index.js`**：`mountApi` 的 `listSkills(cwd)` 把 `path` 一起透传（原先只映射 name/description/source → 按钮无路径可用）。
+- **`lib/client.js`**：
+  - `Section` 导航：「Skill 关联」→「**tag 联系 skill**」，新增「**skill 联系 tag**」→ `view:"skilltags"`；state 新增 `linkSkillName / skillTagSearch / skillPickSearch`。
+  - 新增 `SkillTagPage`（**skill 联系 tag**）：左列技能（扫描结果 + 只有连接记录的幽灵技能 `*`，每行末尾 `📁`），右列该技能的标签勾选框（**勾选即保存**，整组覆盖 `/skills/tags`）+「清空标签」；下方提示"已拥有: …"。
+  - 新增通用 `RevealButton`（`data-skill-tag-reveal` 便于测试）：有 `path` 就发 `{path}`，没有就发 `{skillName}` 让服务端再查；失败 `alert` 提示，不静默。
+  - 「打开文件夹」按钮已铺到**所有列出技能的位置**：`SkillLinkPage`（tag 联系 skill 右列）、`SkillPickerModal`（给标签挑技能）、`SkillTagPage` 左列、`TagList`（标签行里的 Skill 列表）、`ManageTagsDialog`（管理标签右列）、`SkillAddDialog`、`DisabledSkillsDialog`。
+
+### 测试（142 → **149 项**）
+- 新增 `tests/skilltags.test.mjs`（9 项）：三平台命令行、空路径拒绝、`.md`/`.md.disabled` 白名单与目录拒绝、`spawn` 抛错不外泄、`/skills` 透传 path + catalog、`/skills/reveal` 三态（ok / 404 / 400 带 code）、`/skills/tags` 读写覆盖与清空、两方向共享同一份 `skill_links` 记录。
+- `tests/__page-render.mjs` 8 → 16 项：导航三按钮与旧文案消失、切到 `skilltags` 时清空上次选中、双列结构、勾选态与「清空标签」、`RevealButton` 有/无 path 两种请求体、失败必须 alert、`skillPathOf` 边界。
+- 全量 `node --test "tests/*.test.mjs" "tests/*.mjs"` → **149 项通过**。
+
+### 兼容性
+- `lib/client.js` 宿主 no-cache：**刷新页面即生效**。
+- `src/api.js`、`src/reveal.js`、`lib/index.js` 需**重启 DSH 桌面进程**（新路由 + listSkills 带 path）。
+
+## 2026-10-20 — 修复：新对话第一条消息不受技能筛选控制
+
+### 症状
+用户报告：**第一条消息**里模型仍能看到全部 skill，从第二条消息起才受本插件控制。
+
+### 根因（三段，缺一不可）
+| # | 位置 | 机制 |
+| --- | --- | --- |
+| 1 | `lib/index.js` provider | `denied` 集合只在 `domain/changed`（**写操作**触发）里被填充。新对话第一轮列技能时没有任何写操作发生过 → 集合为空 → 全部放行；直到第二轮出现 `domain/changed` 才开始过滤。 |
+| 2 | `recomputeDenials` 工作区解析 | 只查 `registry.sessionIds`，而宿主是在会话**跑起来之后**才 `attachSession` 写那个 id → 第一轮 `workspaceIdOfSession` 返回 `null` → 拿不到工作区 → 全部放行。 |
+| 3 | 候选集来源 | 走 `conversations.candidates(convId, links)`，内部 `conversationEffectiveConfig(conversations.get(id))`；对话行不存在时抛 `TypeError: Cannot read properties of undefined (reading 'config')`，被 `refreshSession` 的 catch 吞掉 → 拒绝集为空。第一轮恰好没有对话行。 |
+
+### 修复
+- `createFilterProvider(sessionId, upstream, denied, ensureFresh)` 新增第 4 个参数：
+  `list()` 与 `get()` 在消费 `denied` **之前**先 `await ensureFresh(options)`，
+  把刷新挂到读路径上。`ensureFresh` 抛错只降级沿用旧集合，不冒回宿主。
+- `refreshSession` 拆出 `refreshBySession(sessionId, cwd)`，加 `refreshing` Set 做
+  重入保护（刷新→invalidate→宿主重新 list→before===after 自然收敛）。
+- 工作区解析新增第 3 档兜底：`workspaceIdOfPath(registry, cwd)`（provider 的
+  `options.cwd` 第一轮就可靠），排在 `workspaceIdOfSession` 之后、`inherited` 之前。
+- 候选集改用 `candidatesFor({config: effective.config, active: activeTagsOf(...)})`，
+  与对话行是否存在彻底解耦。
+
+### 测试（`tests/runtime.test.mjs` 17 → 22 项）
+- 首次 `list` 前必须触发一次刷新；`ensureFresh` 抛错降级；不传时向后兼容；
+  会话未 attach 时 cwd 兜底；**对话行不存在时端到端组合仍算出正确拒绝集**
+  （并断言旧路径 `conversations.candidates` 在该场景下确实抛错——证明修复必要）。
+- 变异验证：去掉 `list()` 里的 `await freshen(options)` → 回归测试变红；恢复通过。
+- 全量：`node --test "tests/*.test.mjs" "tests/*.mjs"` → **133 项通过**。
+
+## 2026-10-20 — 修复：插件异常导致 DSH 宿主崩溃（fatal load failure）
+
+### 症状
+桌面端两次崩溃，日志栈完全一致：
+
+```
+dsh: fatal load failure: Error: cannot get property "workspaceRegistry" without inject
+    at refreshSession (.../dsh-skill-tag/lib/index.js:301:33)
+    at .../lib/index.js:380:9
+    at Object.apply (.../@deepseek-ai/cordis/lib/index.js:921:20)
+    at DomainImpl.emitChanged (.../dsh-storage-domain/lib/index.js:216:13)
+```
+
+两次的日志文件分别是 `crash-2026-10-20T13-41-36-434Z-host.log` 与
+`crash-2026-10-20T13-49-11-873Z-host.log`（后者是同一个旧进程里跑的旧代码，
+磁盘上的修复写在它启动之后——ESM 不热重载）。
+
+### 根因（两层）
+1. **cordis 服务是声明式注入**：`export const inject` 里没声明的服务，
+   `ctx.workspaceRegistry` 会**直接抛**，`ctx.workspaceRegistry ?? ctx.get(...)`
+   的右侧兜底永远轮不到（左侧先炸）。
+2. **事件监听器异常是 fatal**：`domain/changed` 是宿主调用栈上的同步回调，
+   cordis 不吞监听器异常，一路冒到 `Object.apply` → 插件加载失败 → 桌面进程退出。
+   这说明即使 `refreshSession` 内部 try/catch 也不够——枚举 agent、取 `agents`
+   服务本身仍可能同步抛。
+
+### 修复
+- `lib/index.js`：新增导出 `getWorkspaceRegistry(ctx)`——只走 `ctx.get(name)`
+  并整体 try/catch，拿不到返回 `null`。替换 3 处裸读（`refreshSession`、
+  `resolveWorkspaceId`、`resolveWorkspacePath`）。
+- `refreshSession` 拆成薄壳 + `refreshSessionInner`：薄壳整体 try/catch，
+  只记 `warn` 不抛。
+- **`domain/changed` 监听器自身也 self-contain**：外层 try/catch 罩住
+  「判域 → 枚举 agents → 逐个 refresh」，单个 agent 的同步抛出再单独兜一层，
+  任何异常只 `warn`，绝不逃到宿主栈。
+- 同类边界一并加固（都是"注册给宿主的回调"）：
+  - `createUpstreamAdapter.summaries`：`rootsScan` 与 `hostRegistry.snapshot`
+    各自 try/catch，一边挂掉仍返回另一边的技能（原来任一边抛都直接冒出去）。
+  - `createFilterProvider.list` / `.get`：上游抛错时降级为 `[]` / `undefined`，
+    不再把 rejection 丢回宿主的 provider 链。
+  - `registerProvider` 的 factory 内 `controls.add` 包 try/catch（控制面已释放时）。
+  - `apply()` 里"attach 到已存在 agent"的循环包 try/catch。
+- `tests/runtime.test.mjs`：新增 7 项回归（`getWorkspaceRegistry` 只走 `ctx.get`、
+  服务缺失/属性访问抛异常时返回 `null`、`apply()` 在无 workspaceRegistry 的
+  最小 cordis 面不抛、`domain/changed` 监听器内部抛错不逃逸、
+  `createFilterProvider` 上游抛错降级、`createUpstreamAdapter` 两侧单独降级）。
+- 两处均做过**变异验证**：把 `ctx.get("workspaceRegistry")` 换回裸读 → 对应测试变红；
+  去掉监听器 try/catch → 监听器测试变红。恢复后通过。
+
+### 说明
+- 崩溃是**旧代码在旧进程里运行**触发的：修复写盘时间（21:47:28）晚于该 host
+  进程启动时间，ESM 模块不热重载，内存里仍是旧模块。修复后必须重启桌面进程
+  （`lib/index.js` 不在 no-cache 范围）。`lib/client.js` 才是刷新页面即生效。
+- 全量：`node --test "tests/*.test.mjs" "tests/*.mjs"` → **128 项通过**。
+
+## 2026-10-20 — 对话 → 管理标签（对话级双列配置 + 继承工作区）
+
+### 新增
+- **会话行「⋯」菜单新增「管理标签」**，打开与工作区版同构的双列界面，作用域是单个对话。
+  - 走**官方插件槽位** `sidebar.workspaces.session.menu.item`（order 500，排在宿主
+    pin/rename/fork/archive/session-id 之后），不需要 DOM 注入。
+  - 槽位 owner 给 `{sessionId, displayTitle}` 并注入 `useMenuOpenState`；点击先
+    `setMenuOpen(false)` 再打开浮层。宿主没给 hook 时降级为 noop，不崩。
+- **「继承工作区配置」按钮**（只在对话版出现）：把工作区的标签条件 + 手动添加 + 禁用
+  **整体覆盖**到本对话，并记录 `sourceWorkspaceId` / `inheritedAt`；工作区不被写回。
+- **默认继承**：新建对话（`conversations.create(cid, wsId)`）时自动继承一次；
+  之后工作区再改**不会**流入已存在的对话——要重新同步必须点继承按钮。
+- 左列显示继承状态：`继承来源: ws-1 · 2026-10-20 13:33:28（改动不影响工作区）`
+  或 `未继承任何工作区（当前为该对话独立配置）`。
+- 对话自己的手动添加 / 禁用**存在对话身上**（`conversationRecord.own`），
+  与工作区、与其他对话完全隔离。
+
+### 数据结构
+- `src/storage/schema.js`：新增 `conversationOwnConfigSchema`；
+  `conversationRecord` 新增 `own`（全字段 optional，兼容磁盘历史行）。
+- `src/storage/repository.js`：`serialize/deserializeConversation` 读写 `own`。
+- `src/domain/conv.js`：`createConversationState()` 加 `own: null`；新增
+  `emptyOwnConfig()`、`ownConfigFromWorkspace(ws, now)`（**深拷贝**，避免共享引用）。
+- `src/service.js`：`conversationService` 新增 `ensureOwn` / `own` /
+  `inheritFromWorkspace` / `setOwnExpression` / `addOwnManualSkill` /
+  `removeOwnManualSkill` / `disableOwnSkill` / `enableOwnSkill` /
+  `ownView` / `ownDenied`；`create()` 在绑工作区时自动播种一次。
+
+### 服务端 API（`src/api.js`）
+- 新增 `/conversations/config`、`/conversations/inherit`、
+  `/conversations/expression`、`/conversations/skills/{add,remove,disable,enable}`。
+- 新增 `contextForConfig(config, cwd)`（原 `skillContext` 拆出，支持 cwd 扫项目级技能根）、
+  `convShape` / `convPayload` / `workspaceIdForConversation`。
+- `createApiHandler` / `mountApi` 多接 `resolveWorkspaceId`、`resolveWorkspacePath`
+  两个注入点（由 `lib/index.js` 用宿主 `workspaceRegistry` 提供）。
+
+### 运行时（`lib/index.js`）
+- 新增 `workspaceIdOfSession(registry, sessionId)`、`workspaceIdOfPath(registry, cwd)`、
+  `effectiveSkillsConfig(own, ws)`。
+- **`refreshSession` 主键修正**：`convId = sessionId`（不再用 `cwd`）。旧逻辑把
+  "每个目录一个对话"当绑定，与「对话 → 管理标签」按会话配置的口径冲突；`cwd` 仅作旧数据兜底。
+- 生效口径改为 `own` 优先（**空快照也算数**：代表用户已把该对话与工作区解耦），
+  否则退回工作区；两者都无则不筛。
+
+### 界面（`lib/client.js`）
+- `ManageTagsDialog` 单组件双作用域，由 `manageScope(workspaceId, conversationId)` 决定
+  四组端点 + 标题 + 空条件文案 + 保存按钮文案。
+- `TagSettingsDialog` 改为保存目标由调用方注入（`save` / `saveLabel` / `subtitle`），
+  工作区版与对话版共用同一份表达式编辑器。
+- 新增 `SessionManageMenuItem({sessionId, displayTitle, useMenuOpenState})`。
+- `manage` store 扩出 `conversationId` / `sessionTitle`；`OverlayHost` 两版用不同 key。
+
+### 测试
+- 新增 `tests/conversation.test.mjs`（21 项）：快照形态、新建自动继承、工作区改动不流入、
+  继承整体覆盖、继承不回写工作区、条件保存/空/非法/未知标签、手动-禁用互斥、两对话隔离、
+  历史行补快照、落盘跨实例恢复、ownView/ownDenied、HTTP 全链路 11 步、无工作区 400。
+- 新增 `tests/runtime.test.mjs`（11 项）：`effectiveSkillsConfig` 四种情形、
+  `runtimeDeniedSkills`、`workspaceIdOfSession` / `workspaceIdOfPath`。
+- 新增 `tests/__conv-render.mjs`（11 项）：槽位注册与 order、点击开浮层并关菜单、
+  缺 hook 不崩、对话版端点、继承来源展示、空条件不显示 ∅、继承按钮、工作区版无继承按钮、
+  tag 设置回显/载入标签组/保存目标、空条件可保存、禁用端点。
+- 全量：`node --test "tests/*.test.mjs" "tests/*.mjs"` → **122 项通过**。
+
+### 文档
+- 新增 `docs/对话管理标签.md`（需求口径、数据结构、文法、槽位接入、双列/弹窗交互、
+  API 表、运行时屏蔽、28 条边界、B1–B21 验收、部署约束）。
+- 新增 `docs/preview/render-conv-preview.mjs` + `对话管理标签-preview.html` +
+  `conv-manage-shot.png`（3 场景，用真实组件渲染）。
+
+## 2026-10-20 — 修复：空表达式校验自相矛盾
+
+### 修复
+- **用户报告的 bug**：「tag 设置」弹窗里空表达式一边提示「表达式不能为空」，
+  一边又被当作「掌握全部技能」——同一份 `validateExpression` 承担了两套互斥语义。
+- `src/domain/expr.js`：`validateExpression(src, opts)` 新增 `opts.allowEmpty`。
+  - `false`（默认，标签组）：空表达式 → `EMPTY` 错误（行为不变）。
+  - `true`（工作区条件）：空表达式 → `{ ok: true, normalized: "", config: {orTags:[],andGroups:[]}, dnf: [[]] }`。
+  - `dnf: [[]]` 表示"空子句恒真"，与 `evaluateDnf` 语义一致。
+- `src/service.js`：`templates.validate(expr, { allowEmpty })` 透传；
+  `workspaces.setExpression()` 固定用 `allowEmpty: true`，空串直接存为无条件。
+- `src/api.js`：`POST/GET /templates/validate` 接受 `allowEmpty`（布尔或 `"true"`）。
+- `lib/client.js`：`TagSettingsDialog` 的 250ms 防抖校验改传 `{ expression, allowEmpty: true }`，
+  并且**对空表达式在客户端直接短路**（不依赖服务端版本，见下）；
+  空表达式的「解析结果」显示「无条件（掌握全部技能）」而不是容易误解的 `∅`。
+- **旧服务端兼容**：本机桌面进程若尚未重启（`validate` 不认 `allowEmpty`，空串一律回 `EMPTY`），
+  客户端短路仍能让「tag 设置」正常工作——修复只需刷新页面即可，不必等重启。
+- `tests/workspace.test.mjs`：新增 2 项服务层回归 + HTTP 第 8/9 步（带/不带 `allowEmpty`
+  的对照、清空条件回到全部技能）。工作区测试 22 → 24 项。
+- `tests/__manage-render.mjs`：新增 2 项 UI 回归（空表达式不报错且可保存、模拟旧服务端仍不报错），
+  并为迷你 React 运行时补上**假计时器**（250ms 防抖能在断言前落地）与收尾稳定渲染。
+  该文件 8 → 10 项。
+- 两处回归均做过**变异验证**：去掉修复后对应测试确实失败，恢复后通过。
+- 全量：`node --test "tests/*.test.mjs" "tests/*.mjs"` → **79 项通过**。
+
+## 2026-10-20 — 管理标签（工作区双列配置）
+
+### 新增
+- `src/domain/workspace.js`：工作区技能视图纯函数。
+  `normalizeSkillIds` / `hasFilter` / `activeTagsOf` /
+  `workspaceSkillView({config, manualSkills, disabledSkills, candidates, universe})` /
+  `workspaceDeniedSkills` / `normalizeWorkspacePath`。
+- `lib/client.js`：
+  - 工作区行「⋯」菜单注入「管理标签」（`MutationObserver` + `pointerdown` 记行 key，
+    因为宿主 `ProjectRowItem` 的菜单项是硬编码的，没有插件槽位）；
+  - `shell.overlay` 槽位上的浮层宿主 `OverlayHost`；
+  - `ManageTagsDialog`（双列：左=标签条件 + tag 设置，右=技能 + 查看 tag/禁用）；
+  - `TagSettingsDialog`（标签运算 + 「添加标签组」载入 + 250ms 防抖校验 + 错误定位）；
+  - `SkillAddDialog`（排除已有 + 已禁用）、`DisabledSkillsDialog`（可恢复）。
+- `docs/管理标签.md`：数据结构、交互细节、API、边界情况（26 条）、验收标准（A1–A11）。
+- `tests/workspace.test.mjs`：领域纯函数 11 项 + 服务层 10 项 + HTTP 全链路 1 项。
+- `tests/__manage-render.mjs`：用能真正驱动 hook 的迷你 React 运行时执行真实的
+  `ManageTagsDialog` / `TagSettingsDialog` / `SkillAddDialog` / `DisabledSkillsDialog`，8 项。
+
+### 变更
+- `src/storage/schema.js`：`workspaceRecord` 增加 `path` / `expression` /
+  `manualSkills` / `disabledSkills` / `updatedAt`（全部可选，兼容历史行）。
+- `src/service.js`：
+  - `workspaceService` 新增 `setExpression` / `addManualSkill` / `removeManualSkill` /
+    `disableSkill` / `enableSkill` / `view` / `denied` / `migrate`；
+    `edit` 与 `applyTemplate` 结构化变更后用 `configToExpression` 反推回 `expression`；
+  - `loadAll()` 末尾自动 `workspaceService.migrate()`（只有 config 的历史行补表达式，幂等）；
+  - `tags.rename` 同步改写所有**工作区**表达式（原先只改模板）；
+  - `tags.globalDelete` 从所有工作区表达式里摘除该标签名并化简。
+- `src/api.js`：新增 `POST/GET /workspaces/expression`、`POST/GET /workspaces/skills`、
+  `POST /workspaces/skills/{add,remove,disable,enable}`；
+  workspace 响应统一经 `wsShape()` 输出 `expression`/`manualSkills`/`disabledSkills`；
+  校验类错误返回 400 + `issues`/`position`。
+- `lib/index.js`：新增 `runtimeDeniedSkills(ws, universe, candidates)`；
+  `refreshSession` 改为先取真实技能全集再算拒绝集（实现「禁用真的屏蔽技能」），
+  旧 `computeDeniedSkillIds` 保留为 `universe` 扫不到时的兜底。
+
+### 说明
+- 「空条件 = 全部技能；有条件 = 严格子集」是用户确认的语义。副作用：给某个技能打了
+  tag 后，没打 tag 的技能会从该工作区消失，需手动加回。
+- 「tag 设置」保存到**当前工作区**；「添加标签组」只是载入已存表达式当起点，不改原标签组。
+- 测试：`node --test "tests/*.test.mjs" "tests/*.mjs"` → 79 项全部通过。
+- `lib/client.js` no-cache，刷新页面即生效；`lib/index.js`、`src/*` 需重启 DSH 桌面进程。
+- 源目录与 desktop 安装副本不是同一物理文件，改完必须手动复制。
+
+## 2026-10-20 — 标签组配置（布尔表达式）
+
+### 新增
+- `src/domain/expr.js`：标签组布尔表达式引擎（纯函数）。
+  `tokenize` / `parse` / `resolveAst` / `formatExpression` / `toDnf` / `dnfToConfig` /
+  `evaluateDnf` / `configToExpression` / `renameTagInExpression` / `removeTagFromExpression` /
+  `validateExpression` / `quoteName` / `needsQuote` / `ExprError`。
+  文法 `+`=OR、`*`=AND、`*` 优先于 `+`、支持括号；全角 `（）＋＊` 归一；
+  错误统一带 `code`/`position`/`length`。
+- `docs/标签组配置.md`：数据结构、文法、交互细节、API、错误码表、边界情况、验收标准。
+- `docs/preview/`：`render-preview.mjs`（迷你 React 运行时执行真实组件 → 序列化成 HTML，
+  含 250ms 防抖校验）、生成的 `标签组配置-preview.html`、截图 `preview-shot.png`。
+- `tests/expr.test.mjs`、`tests/template.test.mjs`：表达式引擎与服务层单测。
+- `tests/__api-smoke.mjs`：真实 HTTP 全链路验收（校验/新建/回显/编辑/非法拒绝/求值/删除/重名）。
+- `tests/__page-render.mjs`：用最小 React 桩执行 `lib/client.js` 中真实的 `TemplateGroupPage`，
+  验证上下分区、表达式回显、点击插入（自动补 `+` 与引号）、运算符工具条、按钮启用条件。
+
+### 变更
+- `src/storage/schema.js`：`templateRecord` 增加 `expression`、`createdAt`、`updatedAt`
+  （`expression`/`config` 均可选，兼容历史行）。
+- `src/service.js`：
+  - `templateStore` 新增 `validate()` / `evaluate()` / `migrate()`；
+  - `create/update` 支持 `expression`，表达式优先，只给 `config` 时反推；
+  - `loadAll()` 后自动 `migrate()`，把只有 config 的历史行补成表达式（幂等）；
+  - `tags.rename` 同步改写所有模板表达式；标签全局删除时从表达式摘除并化简。
+  - `createServices(repo, opts)` 支持 `opts.log`。
+- `src/api.js`：新增 `POST/GET /templates/validate`、`POST/GET /templates/evaluate`；
+  `/templates` 与 `/templates/update` 透传 `expression`；校验类错误返回 HTTP 400 + `issues`。
+- `lib/index.js`：向 `createServices` 传入 logger。
+- `lib/client.js`：
+  - 主页面导航按钮 `标签组` → `编辑标签组`；
+  - `TemplateGroupPage` 重写为「上：已有标签（搜索 + 点击插入）/ 下：表达式输入区」，
+    含 250ms 防抖实时校验、错误「定位 第N字符」、规范化预览、解析结果预览、
+    运算符工具条、清空、保存/保存新建/删除/关闭编辑；
+  - 列表 chip 展示 `name + expression`；
+  - 新增纯函数 `quoteTagName`（并导出到 `__test`）。
+
+### 说明
+- 标签组为复制语义：修改/删除标签组不影响已应用到工作区或对话的 config。
+- `lib/client.js` no-cache，刷新页面即生效；`lib/index.js`、`src/*` 需重启 DSH 桌面进程。
+- 测试：`node --test "tests/*.test.mjs" "tests/*.mjs"` → 45 项全部通过。

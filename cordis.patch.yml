@@ -1,0 +1,4 @@
+# dsh-skill-tag bundle patch: register the skill-tag host plugin (filter provider + storage domain + web API).
+- insert:
+    - id: dsh-skill-tag
+      name: dsh-skill-tag

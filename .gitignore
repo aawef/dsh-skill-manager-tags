@@ -1,0 +1,9 @@
+node_modules/
+package-lock.json
+.DS_Store
+Thumbs.db
+*.log
+
+# 由 render-*.mjs 生成的界面预览产物（可重新生成，不必入库）
+docs/preview/*.html
+docs/preview/*.png
