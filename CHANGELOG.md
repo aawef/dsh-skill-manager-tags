@@ -1,5 +1,60 @@
 # CHANGELOG
 
+## 2026-10-21 — 修复：`dsh-storage-domain` 写进 dependencies，会把宿主的 workspaceController 打死
+
+### 现象
+
+装上本插件后，DSH 桌面端新建 / 打开工作区报：
+
+```
+workspace create failed: gateway/service-unavailable:
+typert gateway: workspace/create: active Service "workspaceController" is unavailable
+```
+
+同时左侧会话列表、工作区列表一片空白 —— 看上去像数据被清空，实际
+`~/.dsh/storages/workspace.json` 完好（9 个工作区、82 条归档会话都在），是服务没上台、
+前端拿不到数据。
+
+### 根因
+
+`src/storage/schema.js` 有一句：
+
+```js
+import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
+```
+
+这是**宿主提供的运行时包**，注册存储域时必须与宿主使用**同一份模块实例**。但 `package.json`
+把它写进了 `dependencies`（`>=0.2.0-rc.1 <0.3`），pnpm 于是真的装了一份：
+
+- 本机解析到 **0.2.0-rc.2**，且 `nodeLinker: hoisted` 下被提到 profile 顶层；
+- 宿主桌面端内置的是 **0.2.1-rc.2**；
+- `@deepseek-ai/dsh-api-workspace-controller` 的 `peerDependencies` 精确锁定 `0.2.1-rc.2`，
+  版本对不上 → 存储域挂不上 → 依赖它的 workspaceController 一直 pending → 报服务不可用。
+
+触发点往往是一次无关的 `pnpm add`：hoisted 布局重排，把原本嵌套在插件自己 `node_modules`
+里的这个包提到了顶层，冲突面一下子扩散到整个 profile。本次实际就是装另一个插件时踩的。
+
+### 改动
+
+`package.json`：`@deepseek-ai/dsh-storage-domain` 从 `dependencies` 移到 `peerDependencies`
+（范围 `>=0.2.0-rc.2 <0.3`），`dependencies` 只剩 `zod`。
+
+这也与 DSH 生态的惯例一致 —— 对照 `dsh-auto-memory`、`dsh-rewind-plugin`、`dsh-ops`，
+它们的 `@deepseek-ai/*` 全部是 peerDependency，只有需要独立演进的通用库（`schemastery`、
+`cosmokit`）才放进 dependencies。
+
+### 验证
+
+- `require.resolve("@deepseek-ai/dsh-storage-domain", {paths:[<插件>/lib]})` → 宿主同版本 `0.2.1-rc.2`
+- `pnpm-lock.yaml` 里该包只剩一个版本
+- 重启 DSH 后新建工作区恢复正常
+
+### 注意
+
+声明为 peer 后 pnpm **不会**安装它，插件能解析到它依赖的是「profile 顶层有一份与宿主同版本的副本」。
+若宿主升级内置版本，profile 里那份要同步更新（本机做法：在 profile 的 `package.json` 显式声明
+`"@deepseek-ai/dsh-storage-domain": "<宿主版本>"`，而不是靠 override 去纠正插件装错的版本）。
+
 ## 2026-10-21 — 精简设置页：移除工作区/对话编辑器，已有标签默认折叠
 
 ### 需求

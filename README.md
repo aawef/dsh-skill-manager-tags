@@ -50,7 +50,10 @@ pnpm add dsh-skill-tag          # 或 npm i
 
 **重启 DSH 桌面进程**后生效（设置页会出现「Skill 标签」一项）。
 
-> 依赖 Node ≥ 20。宿主的 `@deepseek-ai/cordis` 已由 DSH 提供，无需安装。
+> 依赖 Node ≥ 20。宿主的 `@deepseek-ai/cordis` 与 `@deepseek-ai/dsh-storage-domain` 都声明为
+> **peerDependency**，由 DSH 本体提供，**不要自己安装**：本插件会 `import` 它的 `defineDomain`
+> 来注册存储域，必须与宿主使用同一份模块实例，装成 `dependencies` 会把旧版本提到 profile
+> 顶层、遮蔽宿主版本，导致 `workspaceController` 等服务无法上台（详见 CHANGELOG 2026-10-21）。
 
 ### 本地开发式安装
 
