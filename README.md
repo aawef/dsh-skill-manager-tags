@@ -37,7 +37,7 @@ office * plugin       # 只要 office 包带来的、且是插件相关
 dsh plugin --profile <your-profile> add dsh-skill-tag
 ```
 
-还没发布到 npm 之前，直接用仓库地址装：
+也可以不走 npm，直接从 GitHub 装：
 
 ```bash
 dsh plugin --profile <your-profile> add github:aawef/dsh-skill-manager-tags
