@@ -29,14 +29,22 @@ office * plugin       # 只要 office 包带来的、且是插件相关
 
 ## 安装
 
-这是一个 DSH（DeepSeek Harness）**插件**。把它放进你的 profile 的插件列表即可：
+这是一个 DSH（DeepSeek Harness）**插件**，装进 profile 后随宿主启动加载。
+
+### 一条命令
 
 ```bash
-cd ~/.dsh/profiles/<your-profile>
-pnpm add dsh-skill-tag          # 或 npm i
+dsh plugin --profile <your-profile> add dsh-skill-tag
 ```
 
-然后在 `package.json` 的 `dsh.profile.bundles` 数组里加上 `"dsh-skill-tag"`：
+还没发布到 npm 之前，直接用仓库地址装：
+
+```bash
+dsh plugin --profile <your-profile> add github:aawef/dsh-skill-manager-tags
+```
+
+`dsh plugin` 本质是把参数转发给 profile 目录里的 pnpm，**它不会替你启用插件** ——
+装完还要在 profile 的 `package.json` 的 `dsh.profile.bundles` 数组里加上 `"dsh-skill-tag"`：
 
 ```json
 {
@@ -48,9 +56,14 @@ pnpm add dsh-skill-tag          # 或 npm i
 }
 ```
 
-**重启 DSH 桌面进程**后生效（设置页会出现「Skill 标签」一项）。
+**重启 DSH** 后生效（设置页会出现「Skill 标签」一项）。
 
-> 依赖 Node ≥ 20。宿主的 `@deepseek-ai/cordis` 与 `@deepseek-ai/dsh-storage-domain` 都声明为
+> 官方 DSH 桌面端的 `desktop` profile 归应用独占，命令行改不动它 ——
+> 桌面端请在 **Settings → Plugins** 或插件市场里安装。
+
+> 依赖 Node ≥ 20；需要 DSH `0.2.0-rc.1` 及以上（见 `engines.dsh`）。
+>
+> 宿主的 `@deepseek-ai/cordis` 与 `@deepseek-ai/dsh-storage-domain` 都声明为
 > **peerDependency**，由 DSH 本体提供，**不要自己安装**：本插件会 `import` 它的 `defineDomain`
 > 来注册存储域，必须与宿主使用同一份模块实例，装成 `dependencies` 会把旧版本提到 profile
 > 顶层、遮蔽宿主版本，导致 `workspaceController` 等服务无法上台（详见 CHANGELOG 2026-10-21）。
