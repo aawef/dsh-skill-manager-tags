@@ -1,5 +1,47 @@
 # CHANGELOG
 
+## 2026-10-21 — 修复：工作区的「管理标签」打开成了对话标签管理界面
+
+### 现象
+
+在左侧工作区行的「...」菜单里点「管理标签」，弹出的却是标题为「管理标签（对话）」的界面 ——
+左列是对话维度条件，右列按钮也按 `/conversations/*` 走。想配工作区的技能筛选完全没入口。
+
+### 根因
+
+`lib/client.js` 里两个事实叠在一起：
+
+1. `manageSet()` 用 `Object.assign(manage, patch)` 合并模块级 store，**不清旧字段**；
+2. `manageScope(workspaceId, conversationId)` **只凭 `conversationId` 是否非空**来决定走对话版
+   还是工作区版。
+
+三个打开入口里，两个显式清了对面作用域：
+
+| 入口 | 调用 |
+| --- | --- |
+| 会话行菜单（官方槽位） | `{ ... workspaceId: "", conversationId: sessionId }` ✅ |
+| 聊天框「+」命令 | `{ ... workspaceId: "", conversationId: sessionId }` ✅ |
+| **工作区行菜单（DOM 注入）** | `{ open: true, workspaceId, workspaceTitle }` ❌ 没清 `conversationId` |
+
+于是只要本次会话里打开过一次对话标签管理，之后点工作区的「管理标签」就会带着残留的
+`conversationId` 走对话版。与"重启客户端"无关，只看操作顺序 —— 所以它表现为
+「有时对、有时错」，很容易被当成偶发。
+
+### 改动
+
+在 `manageSet()` 里做**作用域互斥**，不再依赖每个调用点自己记得清：
+
+- 打开对话版 → 清 `workspaceId`
+- 打开工作区版 → 清 `conversationId` / `sessionTitle`
+
+这样以后新增入口即使忘了清，也不会串。
+
+### 测试
+
+`tests/__manage-render.mjs` 新增 1 项：先用会话入口打开对话版，再用工作区入口打开，
+断言 `conversationId` 已清空且 `manageScope` 返回工作区版（`isConv === false`、`id === ws-1`）；
+再反向开一次对话版，断言 `workspaceId` 不残留。**184/184 通过。**
+
 ## 2026-10-21 — 修复：`dsh-storage-domain` 写进 dependencies，会把宿主的 workspaceController 打死
 
 ### 现象

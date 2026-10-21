@@ -558,3 +558,30 @@ test("菜单识别：只有「重命名 + 删除工作区」两项才注入，�
 	assert.equal(helpers.isWorkspaceMenu(["归档", "删除"]), false);
 	assert.equal(helpers.isWorkspaceMenu([]), false);
 });
+
+test("作用域互斥：开过对话管理后再开工作区，必须仍打开工作区版（用户报告的 bug）", async () => {
+	const { sandbox, box } = load();
+	box.fetch = makeFetcher({ calls: [] });
+	let helpers = null;
+	sandbox.window.__ModuleLoader__.load = ({ factory }) => { helpers = factory(() => makeRuntime().react).__test; };
+	vm.runInNewContext(SOURCE, sandbox, { filename: "lib/client.js" });
+
+	// 1) 先从「会话行菜单」打开对话版
+	helpers.manageSet({ open: true, workspaceId: "", workspaceTitle: "", conversationId: "conv-1", sessionTitle: "某对话" });
+	assert.equal(helpers.manageScope(helpers.manage.workspaceId, helpers.manage.conversationId).isConv, true);
+
+	// 2) 再从「工作区行菜单」打开 —— 该入口只传 workspaceId / workspaceTitle
+	helpers.manageSet({ open: true, workspaceId: "ws-1", workspaceTitle: "dsh test" });
+	assert.equal(helpers.manage.conversationId, "", "开工作区作用域时必须清掉残留的 conversationId");
+	const scope = helpers.manageScope(helpers.manage.workspaceId, helpers.manage.conversationId);
+	assert.equal(scope.isConv, false, "否则工作区入口会错误打开「管理标签（对话）」");
+	assert.equal(scope.id, "ws-1");
+	assert.equal(scope.title, "管理标签");
+
+	// 3) 反向：开过工作区后再开对话，同样不得残留 workspaceId
+	helpers.manageSet({ open: true, conversationId: "conv-2", sessionTitle: "另一个对话" });
+	assert.equal(helpers.manage.workspaceId, "", "开对话作用域时必须清掉残留的 workspaceId");
+	const scope2 = helpers.manageScope(helpers.manage.workspaceId, helpers.manage.conversationId);
+	assert.equal(scope2.isConv, true);
+	assert.equal(scope2.id, "conv-2");
+});
