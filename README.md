@@ -249,7 +249,7 @@ src/storage/         storage domain schema + repository
 src/reveal.js        拉起系统文件管理器
 skills/tagging-skills/  随插件注册给宿主的一个 skill
 tools/auto-tag.mjs      一键打标签脚本（dry-run 默认）
-tests/               node:test，192 项
+tests/               node:test，194 项
 docs/                设计文档（见下）
 images/              README 用的界面截图（不进 npm 包）
 ```
@@ -271,7 +271,7 @@ images/              README 用的界面截图（不进 npm 包）
 
 ```bash
 npm install
-npm test          # 192 项
+npm test          # 194 项
 ```
 
 测试分两类，都在 `tests/` 下：
