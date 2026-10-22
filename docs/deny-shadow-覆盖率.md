@@ -114,6 +114,12 @@ skill-explorer / skills-manager 的 UI 快照、另一个 agent 的收集、`dom
 2. `recomputeDenials` 的 `universe` 在降级那一趟仍然偏窄（`denied` 靠
    `computeDeniedSkillIds` 兜底把已打标签的补了回来）。未打标签、且这一趟看不见的
    技能不会被判 deny —— 下一趟正常快照会纠正，且不影响已知名单。
-3. `provider.get()` 对影子名字会回问宿主 `get`，而宿主选中的又是影子自己 →
+3. ~~`provider.get()` 对影子名字会回问宿主 `get`，而宿主选中的又是影子自己 →
    理论上可自递归。实际不可达（影子两个 invocation 都是 false，模型与 `/命令`
-   都调不到），暂不改。
+   都调不到），暂不改。~~
+   **2026-10-22 更正：可达，已修。** 模型侧走 `skill` 工具确实调不到（先 `list()`，
+   影子 `modelInvocable:false` 直接抛错），但 `dsh-tool-skill` 的 `agent/pre-step`
+   对 `/name` 手势是**先 `get` 再判 `userInvocable`**（line 909），于是人打一轮
+   `/<被屏蔽的技能名>` 就会触发 `registry.get → provider.get → registry.get`
+   的无限回环（async，栈不涨、Promise 不 settle → 静默卡死）。
+   现在 `get()` 对 denied 名字直接返回 deny 定义（`content: ""`），不再回问宿主。

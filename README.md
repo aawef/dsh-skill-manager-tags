@@ -181,6 +181,26 @@ node tools/auto-tag.mjs ... --domain ./my-domain-map.json --apply # 连领域轴
 表达式会被编译成 DNF（`{orTags, andGroups}`）再交给匹配引擎。
 标签改名时，**所有引用它的表达式会被按 token 原位改写**，不会失效。
 
+### 4. 路由型技能（router）别被拆散
+
+有些技能的职责就是「帮你挑别的技能」——description 里出现 *Use when the user asks…*
+*Router over the skills…* 这类措辞，还常带有 `skill-filesystem` 之类的下挂资源。
+
+插件**只按名字屏蔽，从不改任何 `SKILL.md` 的内容**，所以路由器自己的提示词一个字都不会变。
+会坏的是**依赖关系**：路由器可见、而它指向的技能被屏蔽时，模型照着提示去加载只会拿到
+`skill "X" is not available for model invocation` —— 这一轮路由白跑，还可能让模型反复试。
+
+所以配条件时请**把路由器和它的簇当成一个整体**（用簇标签一次圈住，别按领域标签零散地挑）：
+
+| 你想要的 | 表达式 |
+| --- | --- |
+| 整个簇（路由器 + 7 个 office 技能） | `routes:office` |
+| 只要路由器本身，不要成员 | `router * routes:office` |
+| 只要成员，不要路由器（自己挑，不需要分发提示） | `routes:office * !router` |
+
+插件运行时不认识"谁是路由器"（router 只是标签约定），这一层耦合靠表达式自己保证完整。
+选完可以用 `POST /skill-tag/api/workspaces/skills` 回读 `candidates`，确认路由器的簇成员没被拆散。
+
 ## HTTP API
 
 挂在 `/skill-tag/api` 前缀下。所有路由**同时接受 GET 和 POST**

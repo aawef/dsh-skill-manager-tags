@@ -1,5 +1,43 @@
 # CHANGELOG
 
+## 2026-10-22（补）— 修复：`/被屏蔽的技能名` 会让界面卡死（provider.get 自递归）
+
+### 现象
+
+用户敲一轮 `/<某个被屏蔽的技能>`（例如 `/office-docx`），agent 的 pre-step 永不 resolve，
+界面像卡住一样，没有任何报错。
+
+### 根因
+
+`userInvocable:false` 并不能挡住这条路径 —— `dsh-tool-skill` 的 `agent/pre-step` 对
+`/name` 手势是**先 `ctx.skills.get(name)` 再判 `isUserInvocable`**（宿主源码 line 909）。
+而宿主 `registry.get()` 的流程是：
+
+```
+collect() → 选中胜出候选（agent 层里就是我们的影子）→ 调影子自己的 provider.get()
+```
+
+我们的 `provider.get()` 原来会 `upstream.getDefinition()` → 又回到 `registry.get(name)`
+→ 又选中影子 → 又是我们 …… 每轮都是 await，**栈不涨、Promise 永不 settle**，
+所以表现为静默挂死而不是爆栈。实测探针里 `registry.get` 被反复调用到人为设的上限。
+
+补一句：模型侧走 `skill` 工具**不会**撞上这个坑 —— 那边先 `list()` 找 summary，
+影子 `modelInvocable:false` 会直接抛 `not available for model invocation`（line 874-875）。
+只有 `/name` 手势（人打的）才先 get。
+
+### 改动
+
+`lib/index.js` `createFilterProvider.get()`：被 `denied` 命中的名字**就地返回** deny 定义
+（`content: ""`），不再回问宿主。本来影子也没有正文可给，所以对外行为不变，只是断掉回环。
+
+### 测试
+
+- 新增两条：get 被屏蔽的名字时上游 `getDefinition`/`summaries` 调用次数必须为 0，
+  且返回的定义能过宿主 `validateDefinition` 的形状校验；放行的名字照旧拿到真正文。
+- 全量 194 通过 0 失败。
+- 探针（`probe-get-loop.mjs`）：修前 `registry.get` 调用 6 次（人为截断），修后 **0** 次。
+
+
 ## 2026-10-22 — 修复：包/插件带来的技能永远屏蔽不掉（17 个静默漏网）
 
 ### 现象

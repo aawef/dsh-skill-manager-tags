@@ -162,3 +162,46 @@ test("观测回调自己抛错也不得影响屏蔽结果", async () => {
 	const shadows = await createFilterProvider("s", upstream, new Set(["pdf"]), null, () => { throw new Error("logger down"); }).list({});
 	assert.deepEqual(shadows.map((s) => s.name), ["pdf"]);
 });
+
+// ── get 路径：不得回问宿主 ────────────────────────────────────────────────────
+//
+// 宿主 registry.get(name) 的流程是 collect() → 选中胜出候选（agent 层里就是
+// 这条影子）→ 调影子自己的 provider.get。若 provider.get 再回问宿主，就是
+//   registry.get → provider.get → registry.get → …
+// 无限自递归。dsh-tool-skill 的 agent/pre-step 对 `/name` 手势是「先 get 再判
+// invocation」，所以用户敲一次 `/<被屏蔽的技能名>` 就能撞上，表现为界面卡死。
+test("get 被屏蔽的名字：直接给 deny 定义，绝不回问宿主（否则自递归）", async () => {
+	let getDefinitionCalls = 0;
+	let snapshotCalls = 0;
+	const upstream = {
+		async summaries() { snapshotCalls += 1; return ALL.map((name) => ({ name, description: `d of ${name}` })); },
+		async getDefinition() { getDefinitionCalls += 1; throw new Error("不该被调用"); },
+	};
+	const p = createFilterProvider("sess", upstream, new Set(["office-docx"]));
+	const def = await p.get({ name: "office-docx", description: "上游描述" }, { cwd: "/w" });
+	assert.equal(getDefinitionCalls, 0, "被屏蔽的名字必须就地返回，不能回问宿主");
+	assert.equal(snapshotCalls, 0, "也不该为了拿正文去触发一次 snapshot");
+
+	// 形状必须过宿主的 validateDefinition
+	assert.equal(def.name, "office-docx");
+	assert.equal(typeof def.description, "string");
+	assert.ok(def.description.length > 0);
+	assert.equal(def.description, "[blocked by skill-tag] 上游描述");
+	assert.deepEqual(def.invocation, { modelInvocable: false, userInvocable: false });
+	assert.equal(def.provider, "skill-tag");
+	assert.equal(typeof def.source, "string");
+	assert.equal(def.content, "", "正文必须是字符串（宿主强校验）");
+});
+
+test("get 放行的名字：照旧委托上游取正文", async () => {
+	const upstream = {
+		async summaries() { return []; },
+		async getDefinition(c) {
+			return { name: c.name, description: "d", provider: "filesystem", source: "user-dsh", content: "# body" };
+		},
+	};
+	const p = createFilterProvider("sess", upstream, new Set(["office-docx"]));
+	const def = await p.get({ name: "pdf" }, {});
+	assert.equal(def.content, "# body", "放行的技能必须拿到真正文");
+	assert.equal(def.provider, "filesystem", "不得被改写");
+});

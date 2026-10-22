@@ -181,7 +181,7 @@ test("domain/changed 监听器：内部抛错不得逃逸（否则 host 直接�
 // 2026-10-22 语义变更：上游挂掉**不再等于一个影子都不发**。屏蔽是按名字生效的，
 // 不知道描述/路径也照样能屏蔽 —— 旧行为（返回空增量）在宿主快照不可用时等于
 // 把全部技能放行，正是 aegis/mattpocock/office 那 17 个漏网的成因。
-test("createFilterProvider：上游抛错时仍按 denied 补发影子、get 返回 undefined，不抛", async () => {
+test("createFilterProvider：上游抛错时仍按 denied 补发影子、get 给 deny 定义，不抛", async () => {
 	const broken = {
 		async summaries() { throw new Error("scan exploded"); },
 		async getDefinition() { throw new Error("registry exploded"); },
@@ -191,8 +191,14 @@ test("createFilterProvider：上游抛错时仍按 denied 补发影子、get 返
 		const out = await p.list({ cwd: "C:/x" });
 		assert.deepEqual(out.map((s) => s.name), ["alpha"], "上游挂了，denied 里的名字依旧要屏蔽");
 		assert.deepEqual(out[0].invocation, { modelInvocable: false, userInvocable: false });
-		assert.equal(await p.get({ name: "alpha" }, {}), undefined, "get 必须降级为 undefined");
+		// 2026-10-22：get 不再回问宿主（会自递归），被屏蔽的名字就地返回 deny 定义
+		const def = await p.get({ name: "alpha" }, {});
+		assert.equal(def.content, "", "回一个空正文的 deny 定义");
+		assert.deepEqual(def.invocation, { modelInvocable: false, userInvocable: false });
+		assert.equal(def.provider, "skill-tag");
 	});
+	// 放行的名字依旧走上游；上游抛错 → undefined，不外泄异常
+	assert.equal(await p.get({ name: "beta" }, {}), undefined, "get 必须降级为 undefined");
 });
 
 test("createUpstreamAdapter：rootsScan / hostRegistry.snapshot 抛错时降级为可用的一部分", async () => {
