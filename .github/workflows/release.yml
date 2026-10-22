@@ -1,0 +1,157 @@
+# 打 tag 即发布：push v* 时自动建 GitHub Release
+#
+# 做四件事：
+#   1. 校验 tag 与 package.json 的 version 一致（防"改了 tag 忘了提版本"）
+#   2. 语法自检（node --check，不需要装依赖）
+#   3. 从 CHANGELOG.md 抽「本节」当 release notes
+#   4. npm pack 出 .tgz，重命名成不带版本号的 dsh-skill-tag.tgz 再附上去
+#      → https://github.com/<owner>/<repo>/releases/latest/download/dsh-skill-tag.tgz 永久可用
+#
+# 也可以用 Actions 页面手动跑（workflow_dispatch），填一个已存在的 tag 即可补发。
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "要发布的 tag（例如 v0.1.4）"
+        required: true
+        type: string
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ inputs.tag || github.ref_name }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      # 手动触发时，工作区默认在默认分支上，必须切到那个 tag
+      - name: 切到目标 tag
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! git rev-parse -q --verify "refs/tags/${TAG}" >/dev/null; then
+            echo "::error::仓库里没有 tag ${TAG}（先 git push origin ${TAG}）"
+            exit 1
+          fi
+          git checkout --detach "refs/tags/${TAG}"
+          echo "checked out $(git rev-parse --short HEAD) (${TAG})"
+
+      - name: 校验 tag 与 package.json 版本一致
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}"
+          PKG="$(node -p "require('./package.json').version")"
+          echo "tag=${TAG}  version=${VERSION}  package.json=${PKG}"
+          if [ "${VERSION}" != "${PKG}" ]; then
+            echo "::error::tag ${TAG} 与 package.json 的 ${PKG} 不一致 —— 先 npm version 再打 tag"
+            exit 1
+          fi
+
+      - name: 语法自检
+        shell: bash
+        run: |
+          set -euo pipefail
+          node --check lib/index.js
+          node --check lib/client.js
+          node --check src/api.js
+
+      - name: 从 CHANGELOG 抽本节说明
+        shell: bash
+        run: |
+          set -euo pipefail
+          VERSION="${TAG#v}" node - <<'NODE'
+          const fs = require("fs");
+
+          const version = process.env.VERSION;
+          const lines = fs.readFileSync("CHANGELOG.md", "utf8").split(/\r?\n/);
+
+          // 所有二级标题的起始行
+          const heads = [];
+          for (let i = 0; i < lines.length; i += 1) {
+            if (/^##\s+/.test(lines[i])) heads.push(i);
+          }
+          if (heads.length === 0) {
+            console.error("CHANGELOG.md 里找不到 `## ` 二级标题");
+            process.exit(1);
+          }
+
+          // 优先：标题里带版本号的（例如 `## 0.1.5 — 修了什么`）
+          // 兜底：文首第一节（本项目按日期记，最新一节就在最上面）
+          const byVersion = heads.find((i) => lines[i].includes(version));
+          const start = byVersion ?? heads[0];
+          const end = heads.find((i) => i > start) ?? lines.length;
+
+          const heading = lines[start].replace(/^##\s+/, "").trim();
+          const body = lines.slice(start + 1, end).join("\n").trim();
+
+          const note = [
+            `> 本次发布 \`${process.env.TAG ?? "v" + version}\` · npm: https://www.npmjs.com/package/${require("./package.json").name}/v/${version}`,
+            "",
+            body,
+            "",
+            "---",
+            "",
+            "```bash",
+            `dsh plugin --profile <your-profile> add ${require("./package.json").name}@${version}`,
+            "```",
+          ].join("\n");
+
+          fs.writeFileSync("title.txt", heading + "\n");
+          fs.writeFileSync("notes.md", note.trimEnd() + "\n");
+          console.log(`标题: ${heading}`);
+          console.log(`正文 ${body.split("\n").length} 行`);
+          NODE
+
+      - name: 打包 tgz（资产名不带版本号）
+        shell: bash
+        run: |
+          set -euo pipefail
+          TARBALL="$(npm pack --silent | tail -1)"
+          mv "${TARBALL}" dsh-skill-tag.tgz
+          SUM="$(sha256sum dsh-skill-tag.tgz | cut -d' ' -f1)"
+          {
+            echo ""
+            echo "**资产**：\`dsh-skill-tag.tgz\`（sha256 \`${SUM}\`）"
+            echo "稳定地址：\`https://github.com/${GITHUB_REPOSITORY}/releases/latest/download/dsh-skill-tag.tgz\`"
+          } >> notes.md
+          ls -lh dsh-skill-tag.tgz
+
+      - name: 建/更新 Release
+        shell: bash
+        run: |
+          set -euo pipefail
+          TITLE="$(cat title.txt)"
+          if gh release view "${TAG}" >/dev/null 2>&1; then
+            echo "Release ${TAG} 已存在 → 更新说明与资产"
+            gh release edit "${TAG}" --title "${TITLE}" --notes-file notes.md
+            gh release upload "${TAG}" ./dsh-skill-tag.tgz --clobber
+          else
+            echo "Release ${TAG} 不存在 → 新建"
+            gh release create "${TAG}" \
+              --title "${TITLE}" \
+              --notes-file notes.md \
+              --verify-tag \
+              --latest \
+              ./dsh-skill-tag.tgz
+          fi
