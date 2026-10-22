@@ -27,6 +27,53 @@ office * plugin       # 只要 office 包带来的、且是插件相关
 | **打开技能所在文件夹** | 任何列出技能的地方都有 📁 按钮，一点即在文件管理器里定位 |
 | **自带一个 skill** | 安装后你的 agent 会获得 `tagging-skills`，能照着文档自己给技能打标签 |
 
+## 界面预览
+
+> 全部是真实实例截图（105 个技能 / 48 个标签 / 一个开了筛选的工作区），没有 mock。
+> 图片源文件在 `images/`（不进 npm 包，README 里用 raw 绝对地址，GitHub 与 npm 都能显示）。
+
+### 图 1 · 入口：会话行「…」→「管理标签」
+
+<img src="https://raw.githubusercontent.com/aawef/dsh-skill-manager-tags/main/images/session-menu.png" width="240" alt="会话行菜单里的管理标签入口">
+
+对话级的配置就挂在会话行的「…」菜单最下面，不用去翻设置页。
+
+### 图 2 · 入口：命令面板里的 `/skill-tag-manage`
+
+<img src="https://raw.githubusercontent.com/aawef/dsh-skill-manager-tags/main/images/command-palette.png" width="820" alt="命令面板中的管理对话标签命令">
+
+在输入框敲 `/` 也能直接开「管理对话标签」——同一个界面，省一次点菜单。
+
+### 图 3 · 打标签：设置 →「Skill 标签」
+
+<img src="https://raw.githubusercontent.com/aawef/dsh-skill-manager-tags/main/images/tag-settings.png" width="620" alt="Skill 标签管理页：新建标签、按来源分组的标签列表">
+
+三个页签分工明确：**tag 联系 skill**（一个标签包含哪些技能）、**skill 联系 tag**
+（一个技能拥有哪些标签）、**编辑标签组**（写表达式存模板）。
+标签按来源分组（`来自:aegis 23 个 Skill`），每条带 `tagId` 和「全局删除」。
+
+### 图 4 · 一个技能看它身上有哪些标签
+
+<img src="https://raw.githubusercontent.com/aawef/dsh-skill-manager-tags/main/images/skill-to-tags.png" width="640" alt="skill 联系 tag：左列技能、右列标签勾选">
+
+左列 `技能 (105)` 每行标着它有几个标签；右边勾选**即时保存**，不用点确认。
+这是配条件前最常开的一页：先看清楚"这个技能到底被哪些标签命中"。
+
+### 图 5 · 工作区「管理标签」：左写条件，右就是下发名单
+
+<img src="https://raw.githubusercontent.com/aawef/dsh-skill-manager-tags/main/images/workspace-filter.png" width="900" alt="工作区管理标签双列界面">
+
+左列是标签条件，下面实时显示**解析结果**和状态「有条件筛选（严格子集）」；
+右列 `技能 (54)` 就是该工作区下发给模型的全部技能，每行可以「查看 tag」「禁用」，
+📁 直接打开技能所在文件夹。底部还能「+ 精细化添加技能」「查看被禁用的技能」。
+
+### 图 6 · 对话「管理标签（对话）」：可以有自己的一份
+
+<img src="https://raw.githubusercontent.com/aawef/dsh-skill-manager-tags/main/images/conversation-filter.png" width="900" alt="对话级管理标签界面与继承来源">
+
+同一个工作区下的某个对话想单独收窄，就在这里改：它会记下**继承来源**与时间
+（`改动不影响工作区`），左下角一键「继承工作区配置」覆盖回来。
+
 ## 安装
 
 这是一个 DSH（DeepSeek Harness）**插件**，装进 profile 后随宿主启动加载。
@@ -97,6 +144,8 @@ sha256sum "$S/lib/client.js" "$D/lib/client.js" | cut -c1-16
 - **skill 联系 tag** —— 选一个技能，勾它拥有哪些标签
 - **编辑标签组** —— 写表达式、存成模板
 
+界面长什么样见上方「图 3」「图 4」。
+
 也可以让 agent 自己做：安装后 `tagging-skills` 这个 skill 会出现在技能列表里，
 里面是完整的推导法 + API 调用纪律。**不要照抄文档里的标签名**（`aegis`、`office-skills`
 只是某一台机器上的实例），按自己机器的技能清单推导。
@@ -114,10 +163,10 @@ node tools/auto-tag.mjs ... --domain ./my-domain-map.json --apply # 连领域轴
 ### 2. 给工作区/对话配条件
 
 - **工作区**：侧栏工作区行的「…」菜单 →「管理标签」
-- **对话**：会话行的「…」菜单，或聊天框左下角「+」→「管理对话标签」
+- **对话**：会话行的「…」菜单（图 1），或聊天框左下角「+」→「管理对话标签」（图 2）
 
 左列写标签条件表达式，右列是命中结果（可手动添加 / 禁用 / 恢复）。改完立刻生效：
-该对话下发给模型的技能列表就是右列那一份。
+该对话下发给模型的技能列表就是右列那一份。两张双列界面见「图 5」「图 6」。
 
 ### 3. 表达式语法
 
@@ -180,27 +229,29 @@ src/storage/         storage domain schema + repository
 src/reveal.js        拉起系统文件管理器
 skills/tagging-skills/  随插件注册给宿主的一个 skill
 tools/auto-tag.mjs      一键打标签脚本（dry-run 默认）
-tests/               node:test，183 项
+tests/               node:test，192 项
 docs/                设计文档（见下）
+images/              README 用的界面截图（不进 npm 包）
 ```
 
 ## 文档
 
 | 文件 | 内容 |
 | --- | --- |
-| [docs/给技能打标签.md](docs/给技能打标签.md) | **打标签的完整手册**：三轴设计、API 调用序列、错误对照表、交付检查清单 |
-| [docs/标签组配置.md](docs/标签组配置.md) | 表达式编辑页的设计与验收 |
-| [docs/管理标签.md](docs/管理标签.md) | 工作区双列配置 |
-| [docs/对话管理标签.md](docs/对话管理标签.md) | 对话级配置与继承 |
-| [docs/技能发现与宿主对齐.md](docs/技能发现与宿主对齐.md) | 为什么"插件看到的技能数"曾经少于宿主，以及怎么对齐 |
-| [docs/skill联系tag与打开文件夹.md](docs/skill联系tag与打开文件夹.md) | 两个方向编辑 + 📁 按钮 |
-| [CHANGELOG.md](CHANGELOG.md) | 按日期倒序的完整开发记录 |
+| [docs/给技能打标签.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/%E7%BB%99%E6%8A%80%E8%83%BD%E6%89%93%E6%A0%87%E7%AD%BE.md) | **打标签的完整手册**：三轴设计、API 调用序列、错误对照表、交付检查清单 |
+| [docs/标签组配置.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/%E6%A0%87%E7%AD%BE%E7%BB%84%E9%85%8D%E7%BD%AE.md) | 表达式编辑页的设计与验收 |
+| [docs/管理标签.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/%E7%AE%A1%E7%90%86%E6%A0%87%E7%AD%BE.md) | 工作区双列配置 |
+| [docs/对话管理标签.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/%E5%AF%B9%E8%AF%9D%E7%AE%A1%E7%90%86%E6%A0%87%E7%AD%BE.md) | 对话级配置与继承 |
+| [docs/技能发现与宿主对齐.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/%E6%8A%80%E8%83%BD%E5%8F%91%E7%8E%B0%E4%B8%8E%E5%AE%BF%E4%B8%BB%E5%AF%B9%E9%BD%90.md) | 为什么"插件看到的技能数"曾经少于宿主，以及怎么对齐 |
+| [docs/deny-shadow-覆盖率.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/deny-shadow-%E8%A6%86%E7%9B%96%E7%8E%87.md) | 为什么包带来的技能会**静默漏网**（`path` 为 null 的那批），以及宿主对影子候选的强校验、层/rank 语义 |
+| [docs/skill联系tag与打开文件夹.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/skill%E8%81%94%E7%B3%BBtag%E4%B8%8E%E6%89%93%E5%BC%80%E6%96%87%E4%BB%B6%E5%A4%B9.md) | 两个方向编辑 + 📁 按钮 |
+| [CHANGELOG.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/CHANGELOG.md) | 按日期倒序的完整开发记录 |
 
 ## 开发
 
 ```bash
 npm install
-npm test          # 183 项
+npm test          # 192 项
 ```
 
 测试分两类，都在 `tests/` 下：
@@ -209,7 +260,7 @@ npm test          # 183 项
 - `__*.mjs` —— 手工脚本：HTTP 全链路冒烟（`__api-smoke`）、用迷你 React 运行时
   执行真实组件并断言渲染结构（`__page-render` 等）
 
-**两个 glob 都要**，`npm test` 已经配好；只跑 `tests/**/*.test.mjs` 会漏掉 45 个用例。
+**两个 glob 都要**，`npm test` 已经配好；只跑 `tests/**/*.test.mjs` 会漏掉 46 个用例。
 
 界面预览可以在没有浏览器扩展时生成静态 HTML：
 
@@ -235,4 +286,4 @@ node docs/preview/render-preview.mjs     # → docs/preview/标签组配置-prev
 
 ## 许可证
 
-MIT — 见 [LICENSE](LICENSE)。
+MIT — 见 [LICENSE](https://github.com/aawef/dsh-skill-manager-tags/blob/main/LICENSE)。

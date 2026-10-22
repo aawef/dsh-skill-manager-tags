@@ -1,5 +1,70 @@
 # CHANGELOG
 
+## 2026-10-22 — 修复：包/插件带来的技能永远屏蔽不掉（17 个静默漏网）
+
+### 现象
+
+模型侧技能目录 71 条，插件口径 `universe 105 / visible 54 / denied 51`。
+按名字对账：71 − 17 = 54 = `visible`，**恰好 17 个该屏蔽的技能原样漏给模型**。
+
+漏网名单干净得可疑 —— 全部是"不由文件系统技能根提供"的那些：
+
+- aegis 4（using-aegis / update-aegis / writing-skills / communicating-concisely）
+- mattpocock 4（ask-matt / research / teach / writing-for-agents）
+- archify 1、本插件的 tagging-skills 1、office 7（`path` 为 null）
+
+被成功屏蔽的 34 个则**全部**来自 `~/.dsh/skills` + `~/.agents/skills`。
+日志、右列界面、`/skill-tag/api/skills` 都是对的（105），只有模型侧少影子 ——
+所以这是**静默失效**，长期没被发现。
+
+### 根因
+
+`createFilterProvider.list()` 只遍历 `upstream.summaries()` 的结果发影子，
+即**发射范围 = 本次能看到的 summary**。而 `createUpstreamAdapter.summaries()` 在
+`nesting.depth > 0` 时会整段跳过宿主快照，只剩扫盘结果；守卫之所以被占住，是因为
+`apply()` 里 `createUpstreamAdapter` 与 `createSkillDiscoverer` **共用同一份
+`snapshotGuard`** —— 设置页 / UI 快照 / 另一个 agent 的收集 / 并发刷新任一在飞，
+否认路径就被连坐降级。
+
+于是"看得见"和"看不见"的分界线，恰好就是"文件系统根"和"别的 provider"的分界线。
+
+### 改动
+
+`lib/index.js`：
+
+1. **影子按名字发**（根治）：`list()` 分两段 —— 看得见的照抄 summary（保留
+   `path` / 描述）；看不见的直接构造最小合法候选。屏蔽按键名生效，不依赖可见性。
+2. **两个出口各用一份重入计数器**：递归那圈只在 adapter 内部，
+   `createSkillDiscoverer` 不在回路里，共用只会互相连坐；发现器另加同 key 并发合并。
+3. **观测**（方案 C）：发生补发时 warn 一行 `shadow backfill ... backfilled=N`，
+   降级时附 `hostSnapshot=skipped(nested)`；健康路径不刷日志。
+
+顺带修正：
+
+- 影子 `rank` 统一取 **0**。原来照抄上游 rank，office 是 `BUNDLED_SKILL_RANK=600`，
+  同层里若有 rank 更小的同名候选就会被顶掉（层内按 rank 升序去重）。
+- 上游 `summaries()` 抛错时不再 `return []`（那等于把全部技能放行），改为只用
+  `denied` 补影子。
+- `denied` 里的历史脏名字先过宿主的 kebab-case 校验：一个不合法候选会让
+  **整个** `provider.list()` 抛错，宿主随即丢弃本插件的全部贡献。
+
+### 测试
+
+- 新增 `tests/shadow-coverage.test.mjs`（8 条）：守卫被占 / 宿主抛错时 `denied`
+  全量收到影子、造出的候选逐个通过宿主 `validateCandidate` 等价校验、脏名字只跳过
+  自己、健康路径不刷日志、同名不重复。
+- `tests/runtime.test.mjs`：原"两个出口必须共用一份计数器"改为"各用一份：另一个
+  出口在飞时否认路径仍必须问宿主"；上游抛错的用例改为"仍按 denied 补发影子"。
+- 全量 `node --test tests/*.test.mjs`：146 通过 0 失败。
+- 仓外复现脚本 `probe-nesting.mjs`：修前 `CASE B emitted=7 missed=16`，
+  修后 `emitted=23 missed=0`。
+
+### 文档
+
+新增 `docs/deny-shadow-覆盖率.md`（现象 / 根因 / 宿主语义 / 修复 / 未决）；
+`docs/技能发现与宿主对齐.md` 的 4.2.1 从"必须共用计数器"改写为"各用一份"，并补 4.4。
+
+
 ## 2026-10-21 — 修复：工作区的「管理标签」打开成了对话标签管理界面
 
 ### 现象

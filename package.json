@@ -1,6 +1,6 @@
 {
   "name": "dsh-skill-tag",
-  "version": "0.1.2",
+  "version": "0.1.3",
   "description": "给 DSH 的技能（skill）打标签，用一条布尔表达式在「工作区 / 对话」两级选出要下发给模型的技能子集",
   "type": "module",
   "main": "lib/index.js",
@@ -40,7 +40,10 @@
       "patch": "./cordis.patch.yml"
     },
     "client": {
-      "inject": ["@deepseek-ai/dsh-client-runtime", "@deepseek-ai/dsh-client-ui-slots"],
+      "inject": [
+        "@deepseek-ai/dsh-client-runtime",
+        "@deepseek-ai/dsh-client-ui-slots"
+      ],
       "platform": "web"
     }
   },

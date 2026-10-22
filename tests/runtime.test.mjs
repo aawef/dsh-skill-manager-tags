@@ -177,14 +177,20 @@ test("domain/changed 监听器：内部抛错不得逃逸（否则 host 直接�
 
 // provider 层的同样规则：宿主会 await `list` / `get`，rejection 也可能升级成
 // fatal。上游（fs 扫描 / 宿主 registry snapshot）挂掉时必须降级而不是抛。
-test("createFilterProvider：上游抛错时 list 返回空增量、get 返回 undefined，不抛", async () => {
+//
+// 2026-10-22 语义变更：上游挂掉**不再等于一个影子都不发**。屏蔽是按名字生效的，
+// 不知道描述/路径也照样能屏蔽 —— 旧行为（返回空增量）在宿主快照不可用时等于
+// 把全部技能放行，正是 aegis/mattpocock/office 那 17 个漏网的成因。
+test("createFilterProvider：上游抛错时仍按 denied 补发影子、get 返回 undefined，不抛", async () => {
 	const broken = {
 		async summaries() { throw new Error("scan exploded"); },
 		async getDefinition() { throw new Error("registry exploded"); },
 	};
 	const p = createFilterProvider("s1", broken, new Set(["alpha"]));
 	await assert.doesNotReject(async () => {
-		assert.deepEqual(await p.list({ cwd: "C:/x" }), [], "list 必须降级为空增量");
+		const out = await p.list({ cwd: "C:/x" });
+		assert.deepEqual(out.map((s) => s.name), ["alpha"], "上游挂了，denied 里的名字依旧要屏蔽");
+		assert.deepEqual(out[0].invocation, { modelInvocable: false, userInvocable: false });
 		assert.equal(await p.get({ name: "alpha" }, {}), undefined, "get 必须降级为 undefined");
 	});
 });
@@ -460,26 +466,56 @@ test("createUpstreamAdapter：scope 必须透传给宿主 snapshot（否则漏�
 	assert.equal(nested, 1, "嵌套那一轮必须跳过宿主快照：snapshot→list→freshen→snapshot 会无限递归");
 });
 
-test("两个出口必须共用一份重入计数器：设置页快照 → 我们的 provider → 否认路径再快照", async () => {
-	// 真实形态：设置页带 scope 问宿主 → 宿主收集到本插件的 per-agent provider →
-	// provider.list() 走 freshen → recomputeDenials → upstream.summaries() 又要
-	// 问宿主。这一圈跨 createSkillDiscoverer 与 createUpstreamAdapter 两个工厂，
-	// 各自一个计数器就互相看不见，会一路 snapshot→list→freshen→snapshot 递归到爆栈。
-	const guard = { depth: 0 };
+// 2026-10-22 修正：此前两个出口（设置页 discoverer / 否认路径 adapter）共用一份
+// 重入计数器。后果是设置页那条读路径（或 skill-explorer、另一个 agent 的收集、
+// 并发刷新）只要有一个 snapshot 在飞，否认路径就被连坐判成"嵌套" → 跳过宿主快照
+// → 只看得见扫盘结果 → 包带来的技能（aegis / mattpocock / archify / office /
+// tagging-skills）全部漏网，且完全静默。
+// 现在各用一份：递归那圈本来只在 adapter 自己内部，adapter 自己的计数器就够。
+test("两个出口各用一份重入计数器：另一个出口在飞时，否认路径仍必须问宿主", async () => {
+	const upstreamGuard = { depth: 0 };
+	const discoverGuard = { depth: 0 };
 	let snapshots = 0;
 	const hostRegistry = {
 		async snapshot() {
 			snapshots += 1;
-			if (snapshots === 1) await upstream.summaries({});
-			return { skills: [{ name: "host-skill" }], complete: true };
+			return { skills: [{ name: "from-package", description: "d", source: "bundled", rank: 600 }] };
 		},
 	};
-	const discover = createSkillDiscoverer({ hostRegistry, rootsScan: () => [{ name: "scan-skill" }], guard });
-	const upstream = createUpstreamAdapter({ hostRegistry, rootsScan: () => [{ name: "scan-skill" }], guard });
+	const upstream = createUpstreamAdapter({
+		hostRegistry,
+		rootsScan: () => [{ name: "scan-skill" }],
+		guard: upstreamGuard,
+	});
+	const discover = createSkillDiscoverer({
+		hostRegistry,
+		rootsScan: () => [{ name: "scan-skill" }],
+		guard: discoverGuard,
+	});
 
-	const out = await discover("/w");
-	assert.equal(snapshots, 1, "否认路径那一圈必须被同一个计数器挡住，不得再开一次宿主快照");
-	assert.ok(out.some((s) => s.name === "host-skill"), "外层仍要拿到宿主的技能");
-	assert.ok(out.some((s) => s.name === "scan-skill"), "外层补缺的自扫描结果仍在");
-	assert.equal(guard.depth, 0, "计数器必须归零，否则第一次之后再也不问宿主了");
+	// 设置页/UI 快照正占着它自己的守卫
+	discoverGuard.depth = 1;
+	const got = await upstream.summaries({ cwd: "/w" });
+	assert.deepEqual(
+		got.map((s) => s.name).sort(),
+		["from-package", "scan-skill"],
+		"另一个出口占着守卫时，否认路径不得退化成只看扫盘",
+	);
+	assert.equal(upstream.lastDegraded, false, "这一趟并没有降级");
+
+	// 它自己那条路确实降级（守卫仍生效），只是不再连坐别人
+	assert.deepEqual((await discover("/w")).map((s) => s.name), ["scan-skill"]);
+	discoverGuard.depth = 0;
+
+	// adapter 自己的守卫被占（真实递归形态）→ 退回扫盘，但**屏蔽不受影响**：
+	// provider.list 会按 denied 把看不见的名字补成影子。
+	upstreamGuard.depth = 1;
+	assert.deepEqual((await upstream.summaries({ cwd: "/w" })).map((s) => s.name), ["scan-skill"]);
+	assert.equal(upstream.lastDegraded, true);
+	const shadows = await createFilterProvider("s", upstream, new Set(["from-package", "scan-skill"])).list({ cwd: "/w" });
+	upstreamGuard.depth = 0;
+	assert.deepEqual(shadows.map((s) => s.name).sort(), ["from-package", "scan-skill"], "降级的那一趟依旧要发全影子");
+	assert.ok(snapshots >= 1);
+	assert.equal(upstreamGuard.depth, 0, "计数器必须归零");
+	assert.equal(discoverGuard.depth, 0, "计数器必须归零（否则第一次之后再也不问宿主了）");
 });
