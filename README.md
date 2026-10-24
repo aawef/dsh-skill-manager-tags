@@ -120,8 +120,12 @@ dsh plugin --profile <your-profile> add github:aawef/dsh-skill-manager-tags
 
 ### 本地开发式安装
 
-如果你直接改源码，注意**源码目录和 profile 的 `node_modules` 里那份是两个物理文件**，
-改完必须手动复制并校验哈希：
+运行时加载的是 profile 里 `node_modules/<插件名>` 那一份，不是你的源码目录。两种接法：
+
+- **junction（推荐）**：让 `~/.dsh/profiles/web/my-plugins/<插件名>` 指向你的源码目录，
+  pnpm 会把它硬链接进 `node_modules` —— 三个路径是**同一个 inode、同一份文件**，
+  改完内容立刻生效，不需要复制；只有**新增/删除文件**才要在 profile 里重跑一次 `pnpm install`。
+- **物理拷贝**：如果当初是手动 `cp` 进去的，那就是两份独立文件，改完必须再 `cp` 一次并校验哈希：
 
 ```bash
 S=/path/to/your/dsh-skill-tag
