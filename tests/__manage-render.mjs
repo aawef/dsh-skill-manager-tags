@@ -643,3 +643,46 @@ test("右列技能搜索框：置于列表顶部，过滤显示而不改变可�
 	assert.equal(inputByPlaceholder(cleared, "搜索技能…")[0].props.value, "");
 	assert.equal(btnByText(cleared, "清除").length, 0, "空搜索词时不显示清除按钮");
 });
+
+test("窗口尺寸固定：搜索让右列行数变少时，浮层高度不跟着缩", async () => {
+	const rt = makeRuntime();
+	const { sandbox, box } = load();
+	box.fetch = makeFetcher({ calls: [] });
+	let Dialog = null;
+	let helpers = null;
+	sandbox.window.__ModuleLoader__.load = ({ factory }) => {
+		const exp = factory((n) => (n === "react" ? rt.react : {}));
+		helpers = exp.__test;
+		exp.apply({
+			effect: (fn) => fn(),
+			slots: { inject: (_n, fn) => fn(), register: (o, C) => { if (o.name === "shell.overlay") Dialog = C; } },
+		});
+	};
+	vm.runInNewContext(SOURCE, sandbox, { filename: "lib/client.js" });
+	helpers.manageSet({ open: true, workspaceId: "ws-1" });
+
+	// 浮层主体（overlay 的唯一直接子 div）必须带确定高度，而不是只靠 maxHeight 撑开
+	const modalOf = (tree) => {
+		const overlay = find(tree, (n) => n.props?.style?.position === "fixed")[0];
+		assert.ok(overlay, "应渲染浮层遮罩");
+		const modal = (overlay.children ?? [])[0];
+		assert.ok(modal && typeof modal === "object", "遮罩里应有浮层主体");
+		return modal;
+	};
+
+	const before = await rt.settle(Dialog, {}, 8, box);
+	const h0 = modalOf(before).props.style.height;
+	assert.equal(h0, "82vh", "未搜索时浮层高度应为固定的 82vh（不能只给 maxHeight）");
+
+	// 搜到只剩 1 个技能：高度必须与搜索前一致
+	inputByPlaceholder(before, "搜索技能…")[0].props.onChange({ target: { value: "alp" } });
+	const after = await rt.settle(Dialog, {}, 8, box);
+	assert.match(allText(after), /技能 \(1\/3\)/);
+	assert.equal(modalOf(after).props.style.height, h0, "过滤后窗口高度不得变小");
+
+	// 搜到 0 个：同样不变
+	inputByPlaceholder(after, "搜索技能…")[0].props.onChange({ target: { value: "zzz" } });
+	const none = await rt.settle(Dialog, {}, 8, box);
+	assert.match(allText(none), /没有匹配/);
+	assert.equal(modalOf(none).props.style.height, h0, "无匹配时窗口高度不得变小");
+});

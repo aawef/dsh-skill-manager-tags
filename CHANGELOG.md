@@ -31,7 +31,16 @@
 `tests/__manage-render.mjs` 新增一条渲染测试：搜索框存在且只有一个、输入 `alp` 后标题变
 `技能 (1/3)` 且只剩 alpha、`GAMMA` 大写同样命中、无匹配时出提示而不是「没有技能」、
 点「清除」后恢复 `技能 (3)` 且清除按钮消失。全套 14 个测试文件仍全绿
-（`__conv-render` 14、`__manage-render` 12、`__page-render` 20、其余各文件通过，`__api-smoke` ALL CHECKS PASSED）。
+（`__conv-render` 14、`__manage-render` 13、`__page-render` 20、其余各文件通过，`__api-smoke` ALL CHECKS PASSED）。
+
+### 后续（同日）：搜索时窗口不能跟着缩小
+
+第一版只给浮层写了 `maxHeight: 82vh`，没有确定高度。结果搜索越准、右列行数越少，
+浮层就被内容撑得越小，每敲一个字母窗口都抖一下。改为在双列浮层上写死
+`height: "82vh"`（`{ ...modalBox, height: "82vh" }`）：左右两列本来就有 `flex: 1` 的滚动区与
+底部按钉按钮，高度定住后只有中间列表滚动，窗口尺寸恒定。
+`tests/__manage-render.mjs` 再加一条：取浮层主体断言 `style.height === "82vh"`，
+并在搜到 1 条、0 条时断言高度不变（`__manage-render` 13 项全过）。
 
 ## 2026-10-24 — 0.1.5：解除对宿主内核包 `dsh-storage-domain` 的依赖
 
