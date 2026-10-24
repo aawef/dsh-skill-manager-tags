@@ -465,3 +465,47 @@ test("helpers.skillPathOf：名字 → 路径，未扫描到的返回 null", () 
 	assert.equal(helpers.skillPathOf(skills, "ghost"), null);
 	assert.equal(helpers.skillPathOf(undefined, "alpha"), null);
 });
+
+test("skill 联系 tag 页：技能已拥有的标签排在前面（分区稳定，内部保持原序）", () => {
+	const skills = [{ name: "alpha", path: "C:\s\alpha\SKILL.md" }];
+	// TAGS 原序：A, B, C, my tag, a+b；alpha 拥有 t-c 与 t-plus（原本都在末尾）→ 应前移
+	const st = baseState({
+		view: "skilltags", skills, linkSkillName: "alpha",
+		data: { tags: TAGS, templates: [], workspaces: [], conversations: [], skillLinks: [{ skillId: "alpha", tagIds: ["t-c", "t-plus"] }] },
+	});
+	const { Section } = boot(plainReact, st);
+	const tree = Section(st);
+	const labels = find(tree, (n) => n.type === "label").map((n) => texts(n).join(""));
+	assert.deepEqual(labels, ["C", "a+b", "A", "B", "my tag"], "已拥有标签前移，未拥有的仍按原顺序");
+	// 勾选态不受排序影响
+	const boxes = find(tree, (n) => n.type === "input" && n.props?.type === "checkbox");
+	assert.deepEqual(boxes.map((b) => b.props.checked), [true, true, false, false, false]);
+});
+
+test("skill 联系 tag 页：搜索时「已拥有优先」依然成立", () => {
+	const skills = [{ name: "alpha", path: "C:\s\alpha\SKILL.md" }];
+	// 搜 "a" 命中 A / my tag? no → A(t-a)、a+b(t-plus)；alpha 拥有 t-plus → a+b 应排第一
+	const st = baseState({
+		view: "skilltags", skills, linkSkillName: "alpha", skillTagSearch: "a",
+		data: { tags: TAGS, templates: [], workspaces: [], conversations: [], skillLinks: [{ skillId: "alpha", tagIds: ["t-plus"] }] },
+	});
+	const { Section } = boot(plainReact, st);
+	const tree = Section(st);
+	const labels = find(tree, (n) => n.type === "label").map((n) => texts(n).join(""));
+	// 搜 "a" 命中 A / my tag（含字母 a）/ a+b，已拥有的 a+b 排到最前
+	assert.deepEqual(labels, ["a+b", "A", "my tag"], "过滤后仍先列已拥有的");
+});
+
+test("helpers.ownedTagsFirst：纯分区，不改内容也不丢项", () => {
+	const helpers = loadHelpers();
+	const tags = [{ tagId: "a" }, { tagId: "b" }, { tagId: "c" }];
+	// 注意：返回值是 vm 沙箱里的数组，跨 realm 的 deepStrictEqual 会失败，统一比 JSON
+	const ids = (out) => JSON.stringify(out.map((t) => t.tagId));
+	assert.equal(ids(helpers.ownedTagsFirst(tags, ["c"])), '["c","a","b"]');
+	assert.equal(ids(helpers.ownedTagsFirst(tags, ["a", "c"])), '["a","c","b"]');
+	assert.equal(ids(helpers.ownedTagsFirst(tags, [])), '["a","b","c"]', "没有标签时顺序不变");
+	assert.equal(ids(helpers.ownedTagsFirst(tags, undefined)), '["a","b","c"]');
+	// 拥有的 id 在 tags 里不存在（幽灵/已删标签）不得凭空插入
+	assert.equal(ids(helpers.ownedTagsFirst(tags, ["zzz"])), '["a","b","c"]');
+	assert.equal(ids(helpers.ownedTagsFirst([], ["a"])), "[]");
+});

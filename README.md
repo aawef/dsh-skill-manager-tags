@@ -57,6 +57,8 @@ office * plugin       # 只要 office 包带来的、且是插件相关
 <img src="https://raw.githubusercontent.com/aawef/dsh-skill-manager-tags/main/images/skill-to-tags.png" width="640" alt="skill 联系 tag：左列技能、右列标签勾选">
 
 左列 `技能 (105)` 每行标着它有几个标签；右边勾选**即时保存**，不用点确认。
+右列会把该技能**已有的标签排在列表最前面**（并保持它们原来的相对顺序），所以不用滚动
+去列表里找；顶部搜索框过滤之后，"已拥有优先"依然成立。
 这是配条件前最常开的一页：先看清楚"这个技能到底被哪些标签命中"。
 
 ### 图 5 · 工作区「管理标签」：左写条件，右就是下发名单

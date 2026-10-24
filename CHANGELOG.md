@@ -1,5 +1,43 @@
 # CHANGELOG
 
+## 2026-10-24 — 改进：`skill 联系 tag` 页把技能已有的标签排到前面
+
+### 背景
+
+右列原本按服务端返回顺序（基本是标签名字母序）平铺所有标签。技能已经拥有的那 5 个标签，
+往往散落在几十行里，要确认"这个技能到底挂了什么"只能靠底部的「已拥有: …」文字，
+在列表里反而看不出来。
+
+### 改动
+
+`lib/client.js`：
+
+1. 新增纯函数 `ownedTagsFirst(tags, ownedIds)`（模块级，已挂到 `exports.__test`）：
+
+   ```js
+   function ownedTagsFirst(tags, ownedIds) {
+       const owned = new Set(ownedIds ?? []);
+       const yes = [];
+       const no = [];
+       for (const t of tags ?? []) (owned.has(t?.tagId) ? yes : no).push(t);
+       return [...yes, ...no];
+   }
+   ```
+
+   **稳定分区**：只把已拥有的提到前面，两个分区内部都保持原顺序，不打乱字母序里的相对位置；
+   拥有的 id 在 `tags` 里不存在（幽灵/已删标签）时不会凭空插入一项。
+2. `SkillTagPage` 用它算 `tagsOrdered`，再按搜索词过滤成 `tagsShown` 渲染。
+   排序与搜索可叠加：过滤后仍然"已拥有的在前"。
+3. **只是显示顺序**——`owned` 集合、勾选态、`/skills/tags` 写库内容都不变。
+
+### 验证
+
+`tests/__page-render.mjs` 新增 3 条：
+① 拥有 `C` 与 `a+b` 时列表变成 `["C","a+b","A","B","my tag"]` 且勾选态 `[true,true,false,false,false]`；
+② 搜索 `a` 时结果为 `["a+b","A","my tag"]`（已拥有的仍最先）；
+③ `ownedTagsFirst` 本身的分区/空集/幽灵 id 行为。
+`__page-render` 现 23 项全过，其余文件不受影响。
+
 ## 2026-10-24 — 新增：右列技能列表顶部搜索框（工作区版 / 对话版共用）
 
 ### 背景
