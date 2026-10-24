@@ -585,3 +585,61 @@ test("作用域互斥：开过对话管理后再开工作区，必须仍打开�
 	assert.equal(scope2.isConv, true);
 	assert.equal(scope2.id, "conv-2");
 });
+
+// ── 右列技能搜索框 ─────────────────────────────────────────────────────────
+
+/** 按 placeholder 找输入框（工作区版与对话版共用同一个组件） */
+const inputByPlaceholder = (node, ph) => find(node, (n) => n.type === "input" && n.props?.placeholder === ph);
+
+test("右列技能搜索框：置于列表顶部，过滤显示而不改变可见技能总数", async () => {
+	const rt = makeRuntime();
+	const { sandbox, box } = load();
+	box.fetch = makeFetcher({ calls: [] });
+	let Dialog = null;
+	let helpers = null;
+	sandbox.window.__ModuleLoader__.load = ({ factory }) => {
+		const exp = factory((n) => (n === "react" ? rt.react : {}));
+		helpers = exp.__test;
+		exp.apply({
+			effect: (fn) => fn(),
+			slots: { inject: (_n, fn) => fn(), register: (o, C) => { if (o.name === "shell.overlay") Dialog = C; } },
+		});
+	};
+	vm.runInNewContext(SOURCE, sandbox, { filename: "lib/client.js" });
+	helpers.manageSet({ open: true, workspaceId: "ws-1" });
+	const tree = await rt.settle(Dialog, {}, 8, box);
+
+	const search = inputByPlaceholder(tree, "搜索技能…");
+	assert.equal(search.length, 1, "右列顶部应有搜索框");
+	assert.equal(allText(tree).includes("技能 (3)"), true, "未搜索时标题显示总数");
+
+	// 输入 "alp" → 只剩 alpha
+	search[0].props.onChange({ target: { value: "alp" } });
+	const filtered = await rt.settle(Dialog, {}, 8, box);
+	const text = allText(filtered);
+	assert.match(text, /技能 \(1\/3\)/, "过滤后标题应显示 匹配/总数");
+	assert.match(text, /alpha/);
+	assert.doesNotMatch(text, /beta/);
+	assert.doesNotMatch(text, /gamma/);
+
+	// 大小写不敏感
+	inputByPlaceholder(filtered, "搜索技能…")[0].props.onChange({ target: { value: "GAMMA" } });
+	const upper = await rt.settle(Dialog, {}, 8, box);
+	assert.match(allText(upper), /gamma/);
+	assert.doesNotMatch(allText(upper), /alpha|beta/, "大小写不敏感，且仍只显示 gamma");
+
+	// 无匹配 → 提示行，且不出现"没有技能"那条（那是给空集合的）
+	inputByPlaceholder(upper, "搜索技能…")[0].props.onChange({ target: { value: "zzz" } });
+	const none = await rt.settle(Dialog, {}, 8, box);
+	assert.match(allText(none), /没有匹配/);
+	assert.doesNotMatch(allText(none), /没有技能。可在下方/);
+
+	// 「清除」把搜索词还原为空
+	const clearBtn = btnByText(none, "清除");
+	assert.equal(clearBtn.length, 1);
+	clearBtn[0].props.onClick();
+	const cleared = await rt.settle(Dialog, {}, 8, box);
+	assert.match(allText(cleared), /技能 \(3\)/);
+	assert.equal(inputByPlaceholder(cleared, "搜索技能…")[0].props.value, "");
+	assert.equal(btnByText(cleared, "清除").length, 0, "空搜索词时不显示清除按钮");
+});

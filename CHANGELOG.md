@@ -1,5 +1,38 @@
 # CHANGELOG
 
+## 2026-10-24 — 新增：右列技能列表顶部搜索框（工作区版 / 对话版共用）
+
+### 背景
+
+「管理标签」浮层右列会把该作用域下发给模型的**全部**技能平铺出来，实际工作区有上百个技能，
+找某一个只能靠滚动，「查看 tag」「禁用」这些行内操作也因此很难点到目标行。
+
+### 改动
+
+`lib/client.js` 的 `ManageTagsDialog`（两版共用同一个组件，只由 `manageScope()` 决定端点）：
+
+1. 新增状态 `skillSearch`，右列标题下方插入一个 `type="search"` 输入框（placeholder「搜索技能…」），
+   非空时右侧出现「清除」按钮；
+2. 新增派生变量，只用于显示：
+
+   ```js
+   const skillQuery = skillSearch.trim().toLowerCase();
+   const shownSkills = (view.visible ?? []).filter((n) => !skillQuery || String(n).toLowerCase().includes(skillQuery));
+   ```
+
+   - **只过滤显示**，`view.visible`、`addable`、禁用/添加/继承等动作都不受影响 ——
+     搜索框不是筛选条件，改它不会改变实际下发给模型的技能集合；
+   - 大小写不敏感；
+3. 标题在有搜索词时显示 `技能 (匹配数/总数)`，让「被过滤了」这件事可见（不会误以为技能变少了）；
+4. 空结果分两种文案：技能集合本身为空 → 原来的「没有技能…」；有技能但无匹配 → 「没有匹配「xxx」的技能。」。
+
+### 验证
+
+`tests/__manage-render.mjs` 新增一条渲染测试：搜索框存在且只有一个、输入 `alp` 后标题变
+`技能 (1/3)` 且只剩 alpha、`GAMMA` 大写同样命中、无匹配时出提示而不是「没有技能」、
+点「清除」后恢复 `技能 (3)` 且清除按钮消失。全套 14 个测试文件仍全绿
+（`__conv-render` 14、`__manage-render` 12、`__page-render` 20、其余各文件通过，`__api-smoke` ALL CHECKS PASSED）。
+
 ## 2026-10-24 — 0.1.5：解除对宿主内核包 `dsh-storage-domain` 的依赖
 
 ### 现象
