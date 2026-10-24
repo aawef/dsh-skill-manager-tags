@@ -1,8 +1,11 @@
 // skill-tag-plugin — storage domain schema (spec §12: 9 entity classes)
 //
-// Backed by @deepseek-ai/dsh-storage-domain defineDomain (evidence:
-// docs/evidence/extract-dsh-storage-domain.js — zod record schemas, KvTable
-// get/put/delete/update/entries, domain/changed events, caller closes).
+// Spec 形状由本仓库 src/storage/domain-spec.js 本地构造，刻意不 import 宿主内核包
+// @deepseek-ai/dsh-storage-domain（原因见该文件头部注释）。运行时通过
+// ctx.storageDomain.open(skillTagDomain) 交给宿主打开。
+//
+// KvTable 能力（get/put/delete/update/entries、domain/changed 事件、caller closes）
+// 来自宿主注入的 domain handle，见 docs/evidence/extract-dsh-storage-domain.js。
 //
 // Entity → table mapping (§12 table, one row per entity unless noted):
 //   tags            全局标签        {tagId, name, createdAt}   key=tagId
@@ -15,7 +18,7 @@
 //  "不要求必须用四张独立数据表"; they must persist, which they do here.)
 
 import { z } from "zod";
-import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain";
+import { defineDomain, domainTable } from "./domain-spec.js";
 
 // ── record schemas ──────────────────────────────────────────────────────────
 

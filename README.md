@@ -110,10 +110,13 @@ dsh plugin --profile <your-profile> add github:aawef/dsh-skill-manager-tags
 
 > 依赖 Node ≥ 20；需要 DSH `0.2.0-rc.1` 及以上（见 `engines.dsh`）。
 >
-> 宿主的 `@deepseek-ai/cordis` 与 `@deepseek-ai/dsh-storage-domain` 都声明为
-> **peerDependency**，由 DSH 本体提供，**不要自己安装**：本插件会 `import` 它的 `defineDomain`
-> 来注册存储域，必须与宿主使用同一份模块实例，装成 `dependencies` 会把旧版本提到 profile
-> 顶层、遮蔽宿主版本，导致 `workspaceController` 等服务无法上台（详见 CHANGELOG 2026-10-21）。
+> 宿主的 `@deepseek-ai/cordis` 声明为 **peerDependency**，由 DSH 本体提供，**不要自己安装**。
+>
+> 存储域 spec 由本插件 `src/storage/domain-spec.js` 本地构造（等价于宿主的 `defineDomain` /
+> `domainTable`），运行时通过 `ctx.storageDomain.open()` 交给宿主打开，**不 import 任何宿主内核包**。
+> 这样 profile 里不会出现与宿主同名的第二份模块副本：早期版本曾 `import`
+> `@deepseek-ai/dsh-storage-domain`，宿主升级（如 `0.2.1-rc.2` → `rc.3`）时那份旧副本会被判定
+> 不兼容并拒绝加载，导致存储域整体不启动、会话与工作区列表全空（详见 CHANGELOG 2026-10-24）。
 
 ### 本地开发式安装
 

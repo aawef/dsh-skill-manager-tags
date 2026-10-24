@@ -1,5 +1,70 @@
 # CHANGELOG
 
+## 2026-10-24 — 0.1.5：解除对宿主内核包 `dsh-storage-domain` 的依赖
+
+### 现象
+
+DSH 升级到 `0.2.1-rc.3` 后，**侧栏所有工作区与对话消失**。数据本身没有丢
+（`~/.dsh/storages/workspace.json` 与 `~/.dsh/sessions/**` 都完好），是界面读不到。
+
+### 根因
+
+本插件此前 `import { defineDomain, domainTable } from "@deepseek-ai/dsh-storage-domain"`。
+为了让这个裸导入能解析，安装时 profile 的 `package.json` 里必须再装一份
+`@deepseek-ai/dsh-storage-domain` 实体 —— 而宿主 `app.asar` 里本来就内置了同名模块。
+于是同一个进程里出现**同一模块的两份不同版本**：
+
+- profile 里那份被钉在 `0.2.1-rc.2`；
+- 宿主升级成 `0.2.1-rc.3` 后，运行时按 `includePrerelease` 的 semver 校验判定旧副本不兼容，
+  直接拒绝加载（见 `profiles/desktop/.plugin-manager/logs/*/pnpm.log`）；
+- 存储域整体未启动 → `ctx.storageDomain` 缺失 → workspace/session 列表为空。
+
+同一结构问题在 `0.2.0-rc.2` 时代已经发生过一次，当时的处置是「把依赖从插件挪到 profile +
+留一句升级时记得同步改版本号的人工提醒」。升级 rc.3 时没人同步 → 原样复发。只要插件还持有
+宿主内核包的副本，每次宿主升级都必然再炸一次。
+
+### 做法
+
+1. 新增 `src/storage/domain-spec.js`，本地实现 `defineDomain` / `domainTable`：
+   - 宿主的 `defineDomain` 实际只做「校验 + 原样返回 spec」，`domainTable` 只是 `{ valueSchema }`
+     包装，复刻成本极低；
+   - 校验规则与宿主一致（`UNIT_NAME_RE = /^[a-z][a-z0-9_]*$/`、version 非负整数、
+     `compatibleVersions` 低于 version、`global.schema` 不接受 `null` 等）。
+2. `src/storage/schema.js` 改为从本地模块引入；宿主能力仍走 `ctx.storageDomain.open(skillTagDomain)`，
+   这部分本来就没变。
+3. 删除 `peerDependencies["@deepseek-ai/dsh-storage-domain"]` —— 插件对宿主内核包零 import，
+   不再需要任何声明。
+4. `engines.dsh` 由版本白名单（`0.2.0-rc.1 || 0.2.0-rc.2 || 0.2.1-rc.1 || 0.2.1-rc.2 || >=0.2.1 <1.0.0`）
+   改为半开区间 **`>=0.2.0-rc.1 <1.0.0`**。
+
+### 为什么改成半开区间就不会再漏
+
+宿主校验用的是 `semver.satisfies(runtimeVersion, range, { includePrerelease: true })`，
+预发布版本参与比较；并且**插件只要写了 `engines.dsh`，`peerDependencies` 完全不参与判定**
+（宿主源码 `unmetRequirements`）。所以一个半开区间即可覆盖 `0.2.1-rc.3`、未来的 `rc.4`、
+`0.2.2-rc.1` 以及 `0.2.1` 正式版，不必每次宿主发版都回来改白名单。
+
+用宿主自带 semver 实测：
+
+```
+✅ >=0.2.0-rc.1 <1.0.0  vs 0.2.1-rc.3   / 0.2.1-rc.4 / 0.2.2-rc.1 / 0.2.1
+❌ 旧白名单              vs 0.2.1-rc.3   （这就是被拒的原因）
+```
+
+### 升级建议
+
+**强烈建议从 0.1.4 升级到 0.1.5**：0.1.4 在 DSH ≥ `0.2.1-rc.3` 上会被判不兼容而跳过后台加载，
+并可能连带让整个存储域无法上台。装完 0.1.5 后，profile 里不再需要
+`@deepseek-ai/dsh-storage-domain` 这一行，可以删掉（若之前手动加过）。
+
+### 验证
+
+- 本仓库测试 194/194 通过；
+- 宿主 profile 重装后 `@deepseek-ai/` 顶层只剩 `cosmokit` / `schemastery` 两个通用库，
+  不再有任何内核包副本；
+- 升级后工作区与历史对话正常显示。
+
+
 ## 2026-10-22（补）— 修复：`/被屏蔽的技能名` 会让界面卡死（provider.get 自递归）
 
 ### 现象
