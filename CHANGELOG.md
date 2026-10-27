@@ -1,5 +1,66 @@
 # CHANGELOG
 
+## 2026-10-27 — 修复：手动添加的技能被旧口径兜底反向屏蔽（0.1.6 补丁）
+
+### 症状
+
+`tagging-skills` 在「对话 → 管理标签」右列明明显示为「手动」，`view.visible` 里也有它，
+但模型侧完全看不到：`skill` 工具报 `skill "tagging-skills" is not available for
+model invocation`，`/skill-tag/api/skills` 返回的 description 是
+`"[blocked by skill-tag] tagging-skills"`、`source: "skill-tag"`。
+
+### 根因
+
+`lib/index.js` 的 `recomputeDenials()` 把两段拒绝集**无条件并集**：
+
+1. `workspaceDeniedSkills()` —— 新口径，懂 `manualSkills` / `disabledSkills`，
+   对 `tagging-skills` 判定为「放行」；
+2. `computeDeniedSkillIds()` —— 旧口径兜底，只算 `linkedSkillIds − candidates`，
+   **完全不知道 manualSkills 的存在**。
+
+`tagging-skills` 只挂了来源标签（`dsh平台配置` / `来自:dsh-skill-tag` / `来自:插件`），
+不在任何标签规则的命中集合里，却“已打标签” → 被第 2 段判 deny → 覆盖第 1 段的放行。
+于是 `createFilterProvider` 给它发了一条 `invocation: {modelInvocable:false,
+userInvocable:false}` 的影子，宿主 `isModelInvocable` 把它过滤掉，模型就再也看不见它。
+
+兜底段原本的注释前提是「universe 扫不到这个名字」，但代码里**没有这个前提判断**，
+它是无条件全覆盖的 —— 于是任何「打过标签 + 只靠手动添加」的技能都会被误伤。
+本机实测：全机 106 个技能里，受害者仅 `tagging-skills` 一个（它是唯一这种形态的技能），
+所以症状看起来像单点失灵，实际是通用逻辑缺陷。
+
+### 改动
+
+`lib/index.js`：
+
+- 新增导出 `computeRuntimeDeniedSkillIds(effective, { universe, candidates, linkedSkillIds })`，
+  把「新口径 ∪ 旧口径兜底」的合并规则收进一个可测的纯函数，并把兜底原本的口头前提
+  写成代码 —— 两道闸：
+  1. 新口径**已放行**的名字（标签命中 ∪ 手动添加 − 禁用）绝不再 deny；
+  2. `universe` 里存在的名字已由新口径给出判定，兜底不重复表态。
+  剩下的才进 denied —— 那才是真正需要兜底的历史残留（已卸载但标签关联还在的名字）。
+- `recomputeDenials()` 改为调用该函数，删掉原先内联的无条件并集。
+
+`tests/runtime.test.mjs`：新增 4 条回归用例 ——
+
+- 手动添加的技能不被旧口径兜底重新屏蔽（本次 bug 的正面用例）；
+- 禁用优先级高于手动添加；
+- 兜底仍覆盖 `universe` 扫不到的历史残留名字（`ghost`）；
+- `universe` 命中的名字即使不在 `candidates` 也不受兜底影响。
+
+### 验证
+
+- `node --test tests/runtime.test.mjs`：**31 / 31 通过**（含新增 4 条）。
+- `npm test`：203 项，198 通过，5 项失败 —— 全部是 `skilltags.test.mjs` 里
+  `mkdtemp` / `spawn` 在沙箱下 `EPERM` 的旧问题（与本次改动无关，未触碰 `src/reveal.js`）。
+- 用这台机器的真实 state 复算：修复前 denied=49（含 `tagging-skills`），
+  修复后 denied=48（不含），`archify` 等真正的漏网技能仍被屏蔽。
+- 源目录 `dsh-skill-tag/待提交/lib/index.js` 与 desktop 安装副本
+  `~/.dsh/profiles/desktop/node_modules/dsh-skill-tag/lib/index.js` 已 `cmp` 一致。
+
+### 生效方式
+
+改的是宿主侧插件代码，需**重启桌面进程**让宿主重新加载插件并重算 denied 集合。
+
 ## 2026-10-24 — 0.1.6：管理标签界面三处改进（技能搜索框 / 窗口定高 / 已有标签优先）
 
 本节是 0.1.6 的发布说明，细节见下面三节。

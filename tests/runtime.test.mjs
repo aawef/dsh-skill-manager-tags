@@ -8,6 +8,7 @@ import assert from "node:assert/strict";
 
 import {
 	effectiveSkillsConfig, workspaceIdOfSession, workspaceIdOfPath, runtimeDeniedSkills,
+	computeRuntimeDeniedSkillIds,
 	getWorkspaceRegistry, apply, createFilterProvider, createUpstreamAdapter,
 } from "../lib/index.js";
 
@@ -68,6 +69,63 @@ test("runtimeDeniedSkills：禁用技能即使命中标签也屏蔽", () => {
 test("runtimeDeniedSkills：null 配置 → 空集合", () => {
 	assert.equal(runtimeDeniedSkills(null, UNIVERSE, []).size, 0);
 });
+
+// ── computeRuntimeDeniedSkillIds：兜底段不得推翻手动放行（2026-10-27 bug）──
+//
+// 症状：tagging-skills 打过标签、但只靠「管理标签」右列手动添加到对话，
+// 面板右列 visible 里有它，模型侧却拿到 deny 影子 → skill 工具报
+// "not available for model invocation"。
+// 根因：旧口径兜底 computeDeniedSkillIds（linked − candidates，不看 manualSkills）
+// 被**无条件并集**进 denied，覆盖了 workspaceDeniedSkills 的放行结论。
+
+test("computeRuntimeDeniedSkillIds：手动添加的技能不被旧口径兜底重新屏蔽", () => {
+	const effective = {
+		config: { orTags: ["t1"], andGroups: [] },
+		manualSkills: ["gamma"],       // gamma 没被 t1 命中，靠手动放行
+		disabledSkills: [],
+	};
+	const denied = computeRuntimeDeniedSkillIds(effective, {
+		universe: UNIVERSE,
+		candidates: ["alpha"],          // t1 只命中 alpha
+		linkedSkillIds: ["alpha", "gamma"], // gamma 有标签关联 → 旧口径会判它 deny
+	});
+	assert.equal(denied.has("gamma"), false, "手动添加的技能必须可见");
+	assert.equal(denied.has("alpha"), false, "标签命中的技能可见");
+	assert.equal(denied.has("beta"), true, "既没命中也没手动的仍然屏蔽");
+});
+
+test("computeRuntimeDeniedSkillIds：禁用优先级高于手动添加", () => {
+	const denied = computeRuntimeDeniedSkillIds(
+		{ config: { orTags: ["t1"], andGroups: [] }, manualSkills: ["gamma"], disabledSkills: ["gamma"] },
+		{ universe: UNIVERSE, candidates: ["alpha"], linkedSkillIds: ["alpha", "gamma"] },
+	);
+	assert.equal(denied.has("gamma"), true);
+});
+
+test("computeRuntimeDeniedSkillIds：兜底仍覆盖 universe 扫不到的历史残留名字", () => {
+	// ghost 已卸载（不在 universe），但 skill_links 里还留着标签关联，
+	// 且没被规则命中 → 旧口径兜底应继续把它判 deny（否则影子就没了）。
+	const denied = computeRuntimeDeniedSkillIds(
+		{ config: { orTags: ["t1"], andGroups: [] }, manualSkills: [], disabledSkills: [] },
+		{ universe: UNIVERSE, candidates: ["alpha"], linkedSkillIds: ["alpha", "ghost"] },
+	);
+	assert.equal(denied.has("ghost"), true);
+	// universe 里已有的名字不再由兜底重复表态（即便它没进 candidates）
+	assert.equal(denied.has("beta"), true);
+});
+
+test("computeRuntimeDeniedSkillIds：universe 命中的名字即使不在 candidates 也不受兜底影响", () => {
+	// 回归：兜底曾经把「universe 里有、但没被规则命中」的全部判 deny ——
+	// 结果与 workspaceDeniedSkills 一致是巧合；手动放行的名字才是分水岭。
+	const effective = { config: { orTags: ["t1"], andGroups: [] }, manualSkills: ["delta"], disabledSkills: [] };
+	const denied = computeRuntimeDeniedSkillIds(effective, {
+		universe: UNIVERSE,
+		candidates: ["alpha"],
+		linkedSkillIds: UNIVERSE,   // 四个都打过标签
+	});
+	assert.deepEqual([...denied].sort(), ["beta", "gamma"]);
+});
+
 
 // ── 会话 → 工作区解析 ──────────────────────────────────────────────────────
 
