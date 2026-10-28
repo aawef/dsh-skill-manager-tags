@@ -1,5 +1,44 @@
 # CHANGELOG
 
+## 2026-10-28 — 修复：README 预览图间歇性加载失败（改用 jsDelivr）
+
+### 症状
+
+GitHub 仓库页与 npm 包页的 README「界面预览」6 张图经常整块空白，刷新几次可能恢复，
+也可能一直不显示。图片本身没坏：`images/` 下 6 个 PNG 的签名、尺寸、IEND 块全部正常，
+直接 `curl` 也能拿到 200 与正确 Content-Type。
+
+### 根因
+
+README 里 6 个 `<img src>` 全部直连 `raw.githubusercontent.com`。该域名同时有 A 与 AAAA 记录，
+而本机所在网络到它的 **IPv6 实际不通**：
+
+- `curl -6` 拉图：5/5 全部 15s 超时，`%{remote_ip}` 为空或停在 `2606:50c0:8000::154`
+- `curl -4` 拉图：5/5 全部 200，耗时 0.94–1.81s
+
+浏览器在「IPv6 优先（RFC 8305 Happy Eyeballs）」下会先试 AAAA；回落到 IPv4 需要几百毫秒
+到数秒，且在该域名上并不总能成功回落，于是表现为图片时好时坏。这也解释了为什么
+「GitHub 页面能打开、图却出不来」——页面主体走的是 `github.com`（本机 hosts 里被钉到
+20.205.243.166，纯 IPv4），图片走的是另一个域名。
+
+### 改法
+
+6 个 `<img src>` 统一换成 jsDelivr，并锁定到当前发布标签避免分支缓存导致的旧图：
+
+```
+https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@v0.1.7/images/<name>.png
+```
+
+实测（同一台机器、同一网络）：jsDelivr 30 次请求 0 失败、中位 150ms，IPv4/IPv6 均可达；
+`raw.githubusercontent.com` 30 次请求 1 次硬失败、中位 732ms。README 第 33 行的说明也一并
+改成「用 jsDelivr 绝对地址并锁到版本标签」，并写明不用 raw 的原因。
+
+### 代价
+
+图片地址锁在 `v0.1.7` 标签上，日后**替换** `images/` 里的同名图片不会自动生效，需要发新版本并
+同步改 README 里的版本号（或改用 `@main`，代价是分支缓存最长约 12 小时刷新）。
+
+
 ## 0.1.7 — 2026-10-27 修复：手动添加的技能被旧口径兜底反向屏蔽
 
 ### 症状
