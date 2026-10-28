@@ -1,6 +1,6 @@
 # CHANGELOG
 
-## 2026-10-28 — 修复：README 预览图间歇性加载失败（改用 jsDelivr）
+## 0.1.8 — 2026-10-28 修复：README 预览图间歇性加载失败（改用 jsDelivr）
 
 ### 症状
 
@@ -23,20 +23,26 @@ README 里 6 个 `<img src>` 全部直连 `raw.githubusercontent.com`。该域�
 
 ### 改法
 
-6 个 `<img src>` 统一换成 jsDelivr，并锁定到当前发布标签避免分支缓存导致的旧图：
+6 个 `<img src>` 统一换成 jsDelivr：
 
 ```
-https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@v0.1.7/images/<name>.png
+https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@main/images/<name>.png
 ```
 
 实测（同一台机器、同一网络）：jsDelivr 30 次请求 0 失败、中位 150ms，IPv4/IPv6 均可达；
 `raw.githubusercontent.com` 30 次请求 1 次硬失败、中位 732ms。README 第 33 行的说明也一并
-改成「用 jsDelivr 绝对地址并锁到版本标签」，并写明不用 raw 的原因。
+改成「用 jsDelivr 绝对地址」，并写明不用 raw 的原因。
 
-### 代价
+### 为什么锁分支而不是锁 tag
 
-图片地址锁在 `v0.1.7` 标签上，日后**替换** `images/` 里的同名图片不会自动生效，需要发新版本并
-同步改 README 里的版本号（或改用 `@main`，代价是分支缓存最长约 12 小时刷新）。
+先试过 `@v0.1.7`（锁 tag 可彻底避开分支缓存），但那样**替换 `images/` 里的同名图片不会自动生效**，
+每次换图都得发版本并手改 6 行 URL。改成 `@main` 后换图零成本，代价是 jsDelivr 的分支缓存
+最长约 12 小时（`Cache-Control: max-age=604800, s-maxage=43200`）才刷新。
+
+### 这次也顺带把 npm 上的 README 刷新了
+
+npm 包页展示的是**发布时打包进 tarball 的 README 快照**，改了仓库不会回填。0.1.8 重新发布后，
+npm 页的 6 张图同样走 jsDelivr。
 
 
 ## 0.1.7 — 2026-10-27 修复：手动添加的技能被旧口径兜底反向屏蔽

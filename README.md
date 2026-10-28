@@ -30,24 +30,24 @@ office * plugin       # 只要 office 包带来的、且是插件相关
 ## 界面预览
 
 > 全部是真实实例截图（105 个技能 / 48 个标签 / 一个开了筛选的工作区），没有 mock。
-> 图片源文件在 `images/`（不进 npm 包，README 里用 jsDelivr 绝对地址并锁到版本标签，GitHub 与 npm 都能显示；
+> 图片源文件在 `images/`（不进 npm 包，README 里用 jsDelivr 绝对地址，GitHub 与 npm 都能显示；
 > 之所以不走 `raw.githubusercontent.com`，是因为部分网络到该域名的 IPv6 不通，图片会间歇性加载失败）。
 
 ### 图 1 · 入口：会话行「…」→「管理标签」
 
-<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@v0.1.7/images/session-menu.png" width="240" alt="会话行菜单里的管理标签入口">
+<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@main/images/session-menu.png" width="240" alt="会话行菜单里的管理标签入口">
 
 对话级的配置就挂在会话行的「…」菜单最下面，不用去翻设置页。
 
 ### 图 2 · 入口：命令面板里的 `/skill-tag-manage`
 
-<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@v0.1.7/images/command-palette.png" width="820" alt="命令面板中的管理对话标签命令">
+<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@main/images/command-palette.png" width="820" alt="命令面板中的管理对话标签命令">
 
 在输入框敲 `/` 也能直接开「管理对话标签」——同一个界面，省一次点菜单。
 
 ### 图 3 · 打标签：设置 →「Skill 标签」
 
-<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@v0.1.7/images/tag-settings.png" width="620" alt="Skill 标签管理页：新建标签、按来源分组的标签列表">
+<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@main/images/tag-settings.png" width="620" alt="Skill 标签管理页：新建标签、按来源分组的标签列表">
 
 三个页签分工明确：**tag 联系 skill**（一个标签包含哪些技能）、**skill 联系 tag**
 （一个技能拥有哪些标签）、**编辑标签组**（写表达式存模板）。
@@ -55,7 +55,7 @@ office * plugin       # 只要 office 包带来的、且是插件相关
 
 ### 图 4 · 一个技能看它身上有哪些标签
 
-<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@v0.1.7/images/skill-to-tags.png" width="640" alt="skill 联系 tag：左列技能、右列标签勾选">
+<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@main/images/skill-to-tags.png" width="640" alt="skill 联系 tag：左列技能、右列标签勾选">
 
 左列 `技能 (105)` 每行标着它有几个标签；右边勾选**即时保存**，不用点确认。
 右列会把该技能**已有的标签排在列表最前面**（并保持它们原来的相对顺序），所以不用滚动
@@ -64,7 +64,7 @@ office * plugin       # 只要 office 包带来的、且是插件相关
 
 ### 图 5 · 工作区「管理标签」：左写条件，右就是下发名单
 
-<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@v0.1.7/images/workspace-filter.png" width="900" alt="工作区管理标签双列界面">
+<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@main/images/workspace-filter.png" width="900" alt="工作区管理标签双列界面">
 
 左列是标签条件，下面实时显示**解析结果**和状态「有条件筛选（严格子集）」；
 右列 `技能 (54)` 就是该工作区下发给模型的全部技能，每行可以「查看 tag」「禁用」，
@@ -73,7 +73,7 @@ office * plugin       # 只要 office 包带来的、且是插件相关
 
 ### 图 6 · 对话「管理标签（对话）」：可以有自己的一份
 
-<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@v0.1.7/images/conversation-filter.png" width="900" alt="对话级管理标签界面与继承来源">
+<img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@main/images/conversation-filter.png" width="900" alt="对话级管理标签界面与继承来源">
 
 同一个工作区下的某个对话想单独收窄，就在这里改：它会记下**继承来源**与时间
 （`改动不影响工作区`），左下角一键「继承工作区配置」覆盖回来。
