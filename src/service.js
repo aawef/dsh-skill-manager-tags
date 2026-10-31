@@ -701,6 +701,54 @@ export function createServices(repo, opts = {}) {
 			return Boolean(conversations.get(conversationId)?.own);
 		},
 
+		/**
+		 * 「一键下发到工作区下所有对话」：把工作区当前三件套批量写进一批对话的 own。
+		 *
+		 * 与 inheritFromWorkspace 的区别是**批量**且带**选择性覆盖**：
+		 *   overwrite=false（默认）→ 只填 own 为 null 的对话（从未配置过）；
+		 *   overwrite=true          → 连已配置的也一起覆盖（界面要求二次确认）。
+		 *
+		 * 为什么默认不覆盖：已配置的对话要么是出生时继承的快照，要么是用户手工
+		 * 调过的。无差别覆盖会抹掉用户意志 —— 0.1.9 那次修复的核心教训。
+		 *
+		 * @param {string} workspaceId
+		 * @param {string[]} conversationIds 该工作区下的对话（由宿主 sessionIds 解析）
+		 * @param {{overwrite?: boolean}} [opts]
+		 * @returns {Promise<{updated: string[], skipped: string[], overwritten: string[]}>}
+		 */
+		async pushWorkspaceToConversations(workspaceId, conversationIds, opts = {}) {
+			const overwrite = opts.overwrite === true;
+			const ws = workspaces.get(workspaceId);
+			if (!ws) throw new Error(`workspace '${workspaceId}' not found`);
+			const updated = [];
+			const skipped = [];
+			const overwritten = [];
+			for (const cid of [...new Set(conversationIds ?? [])].filter(Boolean)) {
+				const conv = await this.ensureOwn(cid);
+				const hadOwn = Boolean(conv.own);
+				if (hadOwn && !overwrite) { skipped.push(cid); continue; }
+				conv.own = ownConfigFromWorkspace(ws);
+				if (!conv.inherited.workspaceId) conv.inherited.workspaceId = ws.workspaceId;
+				await repo.putConversation(serializeConversation(conv));
+				updated.push(cid);
+				if (hadOwn) overwritten.push(cid);
+			}
+			return { updated, skipped, overwritten };
+		},
+
+		/**
+		 * 试算「一键下发」会影响哪些对话（不写任何数据）。
+		 * 界面在确认框里展示这个结果，用户看清范围再决定。
+		 */
+		previewPushWorkspace(conversationIds) {
+			const fresh = [];
+			const configured = [];
+			for (const cid of [...new Set(conversationIds ?? [])].filter(Boolean)) {
+				(this.isConfigured(cid) ? configured : fresh).push(cid);
+			}
+			return { fresh, configured, total: fresh.length + configured.length };
+		},
+
 		/** 对话自己的配置快照（只读视图；保证字段完整） */
 		own(conversationId) {
 			const conv = conversations.get(conversationId);

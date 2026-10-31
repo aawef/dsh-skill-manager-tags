@@ -574,3 +574,133 @@ test("installed_at：首次写入后永不覆盖（三种对话判定的基准�
 	await s2.ready();
 	assert.equal(s2.meta.installedAt(), t1);
 });
+
+// ── 「一键下发工作区配置到该工作区下所有对话」──────────────────────────────
+//
+// 这是 0.1.9 那条规则的批量版本：默认只填**从未配置过**的对话；
+// 已配置的必须显式 overwrite 才覆盖，且 preview 绝不写数据。
+
+async function bootWithPush() {
+	const { services: s, repo } = await boot();
+	await seedWorkspace(s);
+	const listSkills = () => UNIVERSE.map((name) => ({ name }));
+	const resolveWorkspaceId = (sessionId) => (sessionId.startsWith("sess-") ? "ws-1" : null);
+	// 宿主 workspaceRegistry 的 sessionIds：工作区 ws-1 下有两个会话
+	const resolveWorkspaceSessions = (wid) => (wid === "ws-1" ? ["sess-a", "sess-b", "sess-c"] : []);
+	const handler = createApiHandler(s, null, listSkills, resolveWorkspaceId, null, resolveWorkspaceSessions);
+	const server = (await import("node:http")).createServer((req, res) => void handler(req, res));
+	await new Promise((r) => server.listen(0, r));
+	const port = server.address().port;
+	const call = async (path, body) => {
+		const r = await fetch(`http://127.0.0.1:${port}/skill-tag/api${path}`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body ?? {}),
+		});
+		return { status: r.status, ...(await r.json()) };
+	};
+	return { s, repo, call, close: () => new Promise((r) => server.close(r)) };
+}
+
+test("API：下发预览只统计不写数据", async () => {
+	const { s, call, close } = await bootWithPush();
+	try {
+		const d = await call("/workspaces/push-preview", { workspaceId: "ws-1" });
+		assert.equal(d.ok, true);
+		assert.equal(d.total, 3, "工作区下 3 个会话");
+		assert.deepEqual(Array.from(d.fresh).sort(), ["sess-a", "sess-b", "sess-c"]);
+		assert.deepEqual(Array.from(d.configured), []);
+		assert.equal(d.workspaceEmpty, false, "工作区有标签条件，不算空");
+		// preview 绝不写：三个对话的 own 仍然是 null
+		for (const cid of ["sess-a", "sess-b", "sess-c"]) {
+			assert.equal(s.conversations.isConfigured(cid), false, `${cid} 不应被预览写脏`);
+		}
+	} finally { await close(); }
+});
+
+test("API：下发（默认）只填未配置的对话，已有配置的跳过", async () => {
+	const { s, call, close } = await bootWithPush();
+	try {
+		// sess-b 已有自己的配置
+		await s.conversations.inheritFromWorkspace("sess-b", "ws-1");
+		await s.conversations.setOwnExpression("sess-b", "后端");
+
+		const pv = await call("/workspaces/push-preview", { workspaceId: "ws-1" });
+		assert.deepEqual(Array.from(pv.fresh).sort(), ["sess-a", "sess-c"]);
+		assert.deepEqual(Array.from(pv.configured), ["sess-b"]);
+
+		// 不带 overwrite → 只填 a / c
+		const d = await call("/workspaces/push", { workspaceId: "ws-1" });
+		assert.equal(d.ok, true);
+		assert.deepEqual(Array.from(d.updated).sort(), ["sess-a", "sess-c"]);
+		assert.deepEqual(Array.from(d.skipped), ["sess-b"]);
+		assert.deepEqual(Array.from(d.overwritten), []);
+
+		// a / c 拿到工作区配置
+		assert.equal(s.conversations.own("sess-a").expression, "前端");
+		assert.deepEqual(s.conversations.own("sess-a").manualSkills, ["gamma"]);
+		assert.deepEqual(s.conversations.own("sess-a").disabledSkills, ["beta"]);
+		// b 的自定义条件没被抹掉
+		assert.equal(s.conversations.own("sess-b").expression, "后端", "默认不覆盖已配置的对话");
+	} finally { await close(); }
+});
+
+test("API：overwrite=true 时连已配置的对话一起覆盖", async () => {
+	const { s, call, close } = await bootWithPush();
+	try {
+		await s.conversations.inheritFromWorkspace("sess-b", "ws-1");
+		await s.conversations.setOwnExpression("sess-b", "后端");
+
+		const d = await call("/workspaces/push", { workspaceId: "ws-1", overwrite: true });
+		assert.equal(d.ok, true);
+		assert.deepEqual(Array.from(d.updated).sort(), ["sess-a", "sess-b", "sess-c"]);
+		assert.deepEqual(Array.from(d.skipped), []);
+		assert.deepEqual(Array.from(d.overwritten), ["sess-b"], "只有它原本有配置");
+		assert.equal(s.conversations.own("sess-b").expression, "前端", "被工作区配置覆盖");
+	} finally { await close(); }
+});
+
+test("API：工作区为空时 preview 明确标记 workspaceEmpty", async () => {
+	const { s, call, close } = await bootWithPush();
+	try {
+		// 抹掉工作区三件套 → 空条件 = 掌握全部技能
+		await s.workspaces.setExpression("ws-1", "");
+		await s.workspaces.removeManualSkill("ws-1", "gamma");
+		await s.workspaces.enableSkill("ws-1", "beta");
+		const d = await call("/workspaces/push-preview", { workspaceId: "ws-1" });
+		assert.equal(d.ok, true);
+		assert.equal(d.workspaceEmpty, true, "界面据此显示“将掌握全部技能”的警告");
+	} finally { await close(); }
+});
+
+test("API：下发缺少 workspaceId 时报 400，且不动任何数据", async () => {
+	const { s, call, close } = await bootWithPush();
+	try {
+		const d = await call("/workspaces/push", {});
+		assert.equal(d.status, 400);
+		assert.equal(d.ok, false);
+		assert.equal(s.conversations.isConfigured("sess-a"), false);
+	} finally { await close(); }
+});
+
+test("API：没有宿主会话列表时，退回 own.sourceWorkspaceId 收拢对话", async () => {
+	const { services: s } = await boot();
+	await seedWorkspace(s);
+	// 不注入第 6 参（resolveWorkspaceSessions）→ 只能靠对话自己记录的来源工作区
+	await s.conversations.inheritFromWorkspace("conv-x", "ws-1");
+	const handler = createApiHandler(s, null, () => UNIVERSE.map((name) => ({ name })), () => "ws-1");
+	const server = (await import("node:http")).createServer((req, res) => void handler(req, res));
+	await new Promise((r) => server.listen(0, r));
+	const port = server.address().port;
+	try {
+		const r = await fetch(`http://127.0.0.1:${port}/skill-tag/api/workspaces/push-preview`, {
+			method: "POST", headers: { "content-type": "application/json" },
+			body: JSON.stringify({ workspaceId: "ws-1" }),
+		});
+		const d = await r.json();
+		assert.equal(d.ok, true);
+		assert.equal(d.total, 1, "靠 sourceWorkspaceId 找到 conv-x");
+		assert.deepEqual(Array.from(d.configured), ["conv-x"]);
+	} finally { await new Promise((r) => server.close(r)); }
+});
+

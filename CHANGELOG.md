@@ -1,5 +1,88 @@
 # CHANGELOG
 
+## 0.1.13 — 2026-10-31 工作区配置一键下发到该工作区下所有对话
+
+### 需求
+
+用户在工作区版「管理标签」界面提出（workspaceId 4e015e02，界面显示 技能(64)）：
+
+> 这个界面添加一个功能，把工作区配置（标签，手动添加的技能，屏蔽的技能）一键下发到工作区下的所有对话
+
+确认的两条边界：
+
+1. **范围**：只下发「从未配置过」的对话；已配置的默认跳过，要覆盖必须勾选复选框。
+2. **工作区为空**：允许下发，但必须明确警告「下发后这些对话将掌握全部技能」。
+
+### 为什么默认不覆盖
+
+这是 0.1.9 那次修复的直接延续。已配置的对话要么是出生时继承的快照，要么是用户
+手工调过的 —— 无差别覆盖会抹掉用户意志，而那正是 0.1.9 要修掉的问题。批量操作
+放大了伤害面，所以护栏要更硬：
+
+- **两步式**：先 `preview` 看清「未配置 N / 已配置 M」，再决定是否 `push`；
+- **preview 绝不写数据**；
+- **默认 `overwrite=false`**，只填 `own === null` 的对话；
+- 覆盖要显式勾选，且复选框文案写明「会抹掉它们各自的调整」。
+
+### 实现
+
+**服务层**（`src/service.js`）：
+
+| 方法 | 作用 |
+| --- | --- |
+| `pushWorkspaceToConversations(wid, ids, {overwrite})` | 批量写 own，返回 `{updated, skipped, overwritten}` |
+| `previewPushWorkspace(ids)` | 只统计不写，返回 `{fresh, configured, total}` |
+
+**HTTP 层**（`src/api.js`）：
+
+- `POST /workspaces/push-preview` → `{ok, workspaceId, fresh, configured, total, workspaceEmpty}`
+- `POST /workspaces/push` → `{ok, workspaceId, updated, skipped, overwritten}`
+- 对话来源：宿主 `resolveWorkspaceSessions(wid)` ∪ 已存在 `own.sourceWorkspaceId === wid`
+  的对话，去重。后者兜住宿主列表里没有的历史会话；`resolveWorkspaceSessions` 没注入
+  时自动退化为只靠来源字段。
+- 缺 `workspaceId` 返回 400，不动任何数据。
+
+**宿主侧**（`lib/index.js`）：`mountApi` 新增第 6 个实参，从
+`getWorkspaceRegistry(ctx).get(workspaceId).sessionIds` 取会话列表。
+
+**界面**（`lib/client.js`）：工作区版左列底部加「下发到所有对话」按钮（橙色），
+点击打开 `PushToConversationsDialog`：
+
+- 首次渲染即请求 preview，展示「共 N 个对话 / 从未配置过 N 个 / 已有自己的配置 N 个」；
+- 工作区为空时顶部橙色警告条；
+- 已配置数 > 0 时显示覆盖复选框（`data-skill-tag-push-overwrite`）；
+- 「确认下发（N）」实时期算目标数，N 为 0 时禁用；
+- 完成后关闭弹窗、回来提示「已下发 N 个对话，其中覆盖 M 个，跳过 K 个已有配置的」，并刷新界面。
+
+对话版不出现该按钮 —— 下发是「工作区 → 对话」的单向批量操作，反向没有意义。
+
+### 测试
+
+`tests/conversation.test.mjs` 29 → 35 项（新增 6 条 API）：
+
+- 预览只统计不写数据（三个对话的 own 仍是 null）
+- 默认只填未配置的，已有配置的进 skipped 且原条件不被抹掉
+- `overwrite=true` 时全部覆盖，`overwritten` 只列出原本有配置的那些
+- 工作区为空时 `workspaceEmpty=true`（界面据此显示警告）
+- 缺 `workspaceId` 返回 400 且不动数据
+- 没有宿主会话列表时退回 `own.sourceWorkspaceId` 收拢对话
+
+`tests/__manage-render.mjs` 13 → 18 项（新增 5 条界面）：
+
+- 工作区版有下发按钮、对话版没有
+- 点开后先出预览（未配置 2 / 已配置 1），且此刻一次 push 都没有
+- 勾选覆盖后目标数变 3，push 带 `overwrite=true`
+- 不勾选时 push 带 `overwrite=false`
+- 下发完成后弹窗关闭、提示「已下发 2 个对话」
+
+全量 237 项，232 通过。5 项失败仍是 `tests/skilltags.test.mjs` 的 `mkdtemp` EPERM
+（沙箱环境问题，与本次改动无关）。
+
+### 生效方式
+
+`src/api.js` 新增了路由，**必须重启桌面进程**才能访问到
+`/workspaces/push-preview` 与 `/workspaces/push`。
+
 ## 0.1.12 — 2026-10-31 失效技能可视化：标红 + 置底
 
 ### 需求

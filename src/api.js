@@ -33,8 +33,11 @@ function wsShape(ws) {
  * @param {((workspaceId: string) => string|null) | null} [resolveWorkspacePath]
  *        工作区 id → 目录路径（宿主 workspaceRegistry entity.path）。用于把
  *        项目级技能根目录扫进来；为 null 时只能用插件自己记录过的 path。
+ * @param {((workspaceId: string) => string[]) | null} [resolveWorkspaceSessions]
+ *        工作区 id → 该工作区下的会话 id 列表（宿主 workspaceRegistry entity.sessionIds）。
+ *        「一键下发」要知道发给谁；为 null 时退回对话自己记录的 sourceWorkspaceId。
  */
-export function createApiHandler(services, log, listSkills = null, resolveWorkspaceId = null, resolveWorkspacePath = null) {
+export function createApiHandler(services, log, listSkills = null, resolveWorkspaceId = null, resolveWorkspacePath = null, resolveWorkspaceSessions = null) {
 	const json = (res, code, obj) => {
 		res.writeHead(code, { "content-type": "application/json; charset=utf-8" });
 		res.end(JSON.stringify(obj));
@@ -203,6 +206,20 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 			catalog: ctxInfo.catalog,
 			view: services.conversations.ownView(conversationId, ctxInfo),
 		};
+	}
+
+	/**
+	 * 工作区配置是否"全空"（无条件 + 无手动 + 无禁用）。
+	 * 下发全空配置 = 让对话掌握全部技能，必须在界面上明确警告。
+	 */
+	function isEmptyWorkspaceConfig(ws) {
+		if (!ws) return true;
+		const ors = (ws.config?.orTags ?? []).length;
+		const groups = (ws.config?.andGroups ?? []).length;
+		const expr = String(ws.expression ?? "").trim();
+		return ors === 0 && groups === 0 && expr === ""
+			&& (ws.manualSkills ?? []).length === 0
+			&& (ws.disabledSkills ?? []).length === 0;
 	}
 
 	/** 对话绑定到哪个工作区（优先宿主 registry，其次对话自己记录的）。 */
@@ -503,6 +520,52 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 				});
 			}
 
+			// ── 「一键下发工作区配置到该工作区下所有对话」 ────────────────
+			//
+			// 动机：工作区配置改完，散落的对话各自为政。逐个点「继承」太麻烦，
+			// 于是提供一个批量下发。但**批量破坏性操作必须有护栏**：
+			//   · preview（GET/POST /workspaces/push-preview）只试算，不写；
+			//   · push 默认 overwrite=false，只填「从未配置过」的对话；
+			//   · 已配置的对话必须显式 overwrite=true 才覆盖（界面二次勾选确认）。
+			//
+			// 这是 0.1.9 那轮修复的直接延续：用户改的东西不能被无差别覆盖。
+			if ((path === "/workspaces/push-preview" || path === "/workspaces/push") && (method === "GET" || method === "POST")) {
+				const wid = q("workspaceId");
+				if (!wid) return json(res, 400, { ok: false, error: "缺少 workspaceId" });
+				// 该工作区下的对话：宿主 sessionIds 是权威来源。
+				// resolveWorkspaceSessions 没注入时退回对话自己记录的 sourceWorkspaceId。
+				let ids = [];
+				if (typeof resolveWorkspaceSessions === "function") {
+					try { ids = resolveWorkspaceSessions(wid) ?? []; } catch { ids = []; }
+				}
+				if (!Array.isArray(ids)) ids = [];
+				// 并入已存在的 own.sourceWorkspaceId 指向本工作区的对话（宿主列表可能不含历史会话）
+				for (const c of services._caches.conversations.values()) {
+					if (c?.own?.sourceWorkspaceId === wid) ids.push(c.conversationId);
+				}
+				ids = [...new Set(ids.filter(Boolean))];
+
+				if (path === "/workspaces/push-preview") {
+					const preview = services.conversations.previewPushWorkspace(ids);
+					const ws = services.workspaces.get(wid);
+					return json(res, 200, {
+						ok: true,
+						workspaceId: wid,
+						...preview,
+						// 工作区当前是否为空（空 = 下发等于"掌握全部技能"，界面要明确警告）
+						workspaceEmpty: isEmptyWorkspaceConfig(ws),
+					});
+				}
+
+				const overwrite = body?.overwrite === true;
+				try {
+					const out = await services.conversations.pushWorkspaceToConversations(wid, ids, { overwrite });
+					return json(res, 200, { ok: true, workspaceId: wid, ...out });
+				} catch (error) {
+					return json(res, 400, { ok: false, error: String(error?.message ?? error) });
+				}
+			}
+			
 			// ── 「对话 → 管理标签」双列界面 ────────────────────────────────
 			// 对话拥有**自己的**配置快照（own）：标签条件 + 手动添加 + 禁用。
 			// 工作区配置不会自动流入对话，除非：新建对话（自动继承一次）或
@@ -564,13 +627,13 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 }
 
 /** Mount the handler on a cordis ctx (inject webServer). */
-export function mountApi(ctx, services, listSkills = null, resolveWorkspaceId = null, resolveWorkspacePath = null) {
+export function mountApi(ctx, services, listSkills = null, resolveWorkspaceId = null, resolveWorkspacePath = null, resolveWorkspaceSessions = null) {
 	ctx.effect(
 		() =>
 			ctx.webServer.register({
 				kind: "prefix",
 				path: "/skill-tag/api",
-				handler: createApiHandler(services, ctx.logger, listSkills, resolveWorkspaceId, resolveWorkspacePath),
+				handler: createApiHandler(services, ctx.logger, listSkills, resolveWorkspaceId, resolveWorkspacePath, resolveWorkspaceSessions),
 			}),
 		"skill-tag: api",
 	);

@@ -75,6 +75,22 @@ function makeFetcher(log) {
 		if (path === "/workspaces/skills/disable") { state.disabledSkills.push(JSON.parse(log.lastBody).skillName); state.manualSkills = state.manualSkills.filter((s) => s !== JSON.parse(log.lastBody).skillName); return { ok: true, workspace: {} }; }
 		if (path === "/workspaces/skills/enable") { state.disabledSkills = state.disabledSkills.filter((s) => s !== JSON.parse(log.lastBody).skillName); return { ok: true, workspace: {} }; }
 		if (path === "/workspaces/skills/remove") { state.manualSkills = state.manualSkills.filter((s) => s !== JSON.parse(log.lastBody).skillName); return { ok: true, workspace: {} }; }
+		// ── 一键下发：preview 只统计，push 才写（顺序与真实 API 一致）──
+		if (path === "/workspaces/push-preview") {
+			const fresh = ["sess-a", "sess-c"];
+			const configured = ["sess-b"];
+			return {
+				ok: true, workspaceId: "ws-1",
+				fresh, configured, total: fresh.length + configured.length,
+				workspaceEmpty: state.expression.trim() === "" && state.manualSkills.length === 0 && state.disabledSkills.length === 0,
+			};
+		}
+		if (path === "/workspaces/push") {
+			const overwrite = JSON.parse(log.lastBody ?? "{}").overwrite === true;
+			return overwrite
+				? { ok: true, workspaceId: "ws-1", updated: ["sess-a", "sess-b", "sess-c"], skipped: [], overwritten: ["sess-b"] }
+				: { ok: true, workspaceId: "ws-1", updated: ["sess-a", "sess-c"], skipped: ["sess-b"], overwritten: [] };
+		}
 		return { ok: false, error: "not found " + path };
 	};
 	return async (url, init) => {
@@ -686,3 +702,112 @@ test("窗口尺寸固定：搜索让右列行数变少时，浮层高度不跟�
 	assert.match(allText(none), /没有匹配/);
 	assert.equal(modalOf(none).props.style.height, h0, "无匹配时窗口高度不得变小");
 });
+
+// ── 一键下发到所有对话（工作区版）────────────────────────────────────────────
+
+/** 打开浮层并返回 { tree, Dialog, helpers, log }，供下发相关测试复用。 */
+async function openWorkspaceDialog(opts = {}) {
+	const rt = makeRuntime();
+	const { sandbox, box } = load();
+	const log = { calls: [] };
+	box.fetch = makeFetcher(log);
+	let Dialog = null;
+	let helpers = null;
+	sandbox.window.__ModuleLoader__.load = ({ factory }) => {
+		const exp = factory((n) => (n === "react" ? rt.react : {}));
+		helpers = exp.__test;
+		exp.apply({
+			effect: (fn) => fn(),
+			slots: { inject: (_n, fn) => fn(), register: (o, C) => { if (o.name === "shell.overlay") Dialog = C; } },
+		});
+	};
+	vm.runInNewContext(SOURCE, sandbox, { filename: "lib/client.js" });
+	helpers.manageSet({ open: true, workspaceId: "ws-1" });
+	if (opts.beforeRender) opts.beforeRender({ helpers, box, log });
+	const tree = await rt.settle(Dialog, {}, 8, box);
+	return { rt, tree, Dialog, helpers, log, box };
+}
+
+test("工作区版有「下发到所有对话」按钮，对话版没有", async () => {
+	const { tree, helpers } = await openWorkspaceDialog();
+	const push = find(tree, (n) => n.props?.["data-skill-tag-push"] === "1");
+	assert.equal(push.length, 1, "工作区版应有一个下发按钮");
+	assert.match(texts(push[0]).join(""), /下发到所有对话/);
+
+	// 对话版不应出现该按钮（下发是工作区→对话的单向批量操作）
+	const rt2 = makeRuntime();
+	const { sandbox, box } = load();
+	box.fetch = makeFetcher({ calls: [] });
+	let Dialog = null;
+	let h2 = null;
+	sandbox.window.__ModuleLoader__.load = ({ factory }) => {
+		const exp = factory((n) => (n === "react" ? rt2.react : {}));
+		h2 = exp.__test;
+		exp.apply({ effect: (fn) => fn(), slots: { inject: (_n, fn) => fn(), register: (o, C) => { if (o.name === "shell.overlay") Dialog = C; } } });
+	};
+	vm.runInNewContext(SOURCE, sandbox, { filename: "lib/client.js" });
+	h2.manageSet({ open: true, conversationId: "conv-1" });
+	const t2 = await rt2.settle(Dialog, {}, 8, box);
+	assert.equal(find(t2, (n) => n.props?.["data-skill-tag-push"] === "1").length, 0, "对话版不该有下发按钮");
+	assert.ok(h2 && helpers, "两版都要能载入");
+});
+
+test("点「下发到所有对话」先出预览：未配置 2 / 已配置 1，且此刻不写数据", async () => {
+	const { tree, rt, Dialog, log, box } = await openWorkspaceDialog();
+	const push = find(tree, (n) => n.props?.["data-skill-tag-push"] === "1")[0];
+	push.props.onClick();
+	const opened = await rt.settle(Dialog, {}, 8, box);
+	const text = allText(opened);
+	assert.match(text, /下发到该工作区下的所有对话/);
+	assert.match(text, /共 3 个对话/);
+	assert.match(text, /从未配置过：2 个/);
+	assert.match(text, /已有自己的配置：1 个/);
+	assert.match(text, /将实际写入 2 个对话/, "默认只算未配置的");
+	// 只发生了 preview 调用，没有 push
+	// 注：迷你运行时的 effect 每轮 settle 都会重跑（真实 React 有依赖数组），
+	// 所以这里只断言"至少调过一次 preview、一次 push 都没有"。
+	assert.ok(log.calls.filter((c) => c.path === "/workspaces/push-preview").length >= 1);
+	assert.equal(log.calls.filter((c) => c.path === "/workspaces/push").length, 0, "预览阶段绝不写");
+});
+
+test("勾选「同时覆盖」后，实际写入数变成 3，且 push 带 overwrite=true", async () => {
+	const { tree, rt, Dialog, log, box } = await openWorkspaceDialog();
+	find(tree, (n) => n.props?.["data-skill-tag-push"] === "1")[0].props.onClick();
+	let opened = await rt.settle(Dialog, {}, 8, box);
+	const cb = find(opened, (n) => n.props?.["data-skill-tag-push-overwrite"] === "1")[0];
+	assert.ok(cb, "已配置的对话存在时应有覆盖复选框");
+	cb.props.onChange({ target: { checked: true } });
+	opened = await rt.settle(Dialog, {}, 8, box);
+	assert.match(allText(opened), /将实际写入 3 个对话/);
+
+	find(opened, (n) => n.props?.["data-skill-tag-push-confirm"] === "1")[0].props.onClick();
+	await rt.settle(Dialog, {}, 8, box);
+	const pushes = log.calls.filter((c) => c.path === "/workspaces/push");
+	assert.equal(pushes.length, 1);
+	assert.equal(pushes[0].body.overwrite, true);
+	assert.equal(pushes[0].body.workspaceId, "ws-1");
+});
+
+test("不勾选覆盖时，push 带 overwrite=false（只填未配置的）", async () => {
+	const { tree, rt, Dialog, log, box } = await openWorkspaceDialog();
+	find(tree, (n) => n.props?.["data-skill-tag-push"] === "1")[0].props.onClick();
+	const opened = await rt.settle(Dialog, {}, 8, box);
+	find(opened, (n) => n.props?.["data-skill-tag-push-confirm"] === "1")[0].props.onClick();
+	await rt.settle(Dialog, {}, 8, box);
+	const pushes = log.calls.filter((c) => c.path === "/workspaces/push");
+	assert.equal(pushes.length, 1);
+	assert.equal(pushes[0].body.overwrite, false);
+});
+
+test("下发完成后回到主界面并提示实际写入数", async () => {
+	const { tree, rt, Dialog, box } = await openWorkspaceDialog();
+	find(tree, (n) => n.props?.["data-skill-tag-push"] === "1")[0].props.onClick();
+	const opened = await rt.settle(Dialog, {}, 8, box);
+	find(opened, (n) => n.props?.["data-skill-tag-push-confirm"] === "1")[0].props.onClick();
+	const after = await rt.settle(Dialog, {}, 8, box);
+	// 确认框关闭，提示条出现，主界面按钮仍在
+	assert.equal(allText(after).includes("下发到该工作区下的所有对话"), false, "确认框应已关闭");
+	assert.match(allText(after), /已下发 2 个对话/);
+	assert.equal(find(after, (n) => n.props?.["data-skill-tag-push"] === "1").length, 1);
+});
+
