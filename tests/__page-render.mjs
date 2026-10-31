@@ -77,6 +77,7 @@ const plainReact = {
 	useState: (init) => [init, () => {}],
 };
 
+
 const TAGS = [
 	{ tagId: "t-a", name: "A" },
 	{ tagId: "t-b", name: "B" },
@@ -510,6 +511,125 @@ test("helpers.ownedTagsFirst：纯分区，不改内容也不丢项", () => {
 	// 拥有的 id 在 tags 里不存在（幽灵/已删标签）不得凭空插入
 	assert.equal(ids(helpers.ownedTagsFirst(tags, ["zzz"])), '["a","b","c"]');
 	assert.equal(ids(helpers.ownedTagsFirst([], ["a"])), "[]");
+});
+// ── 失效技能标红 / 置底（2026-10-31 第二轮） ────────────────────────────
+//
+// 用户要求：
+//   图一（skill 联系 tag）：失效 skill 放最底下 + 名字标红；
+//   图二/图三（标签列表两处）：只把**含失效 skill 的标签名**标红；
+//   点开标签后，失效 skill 名字标红并放底部。
+
+const RED = "#e74c3c";
+
+test("主页面标签列表：含失效技能的标签名标红，其余不标红", () => {
+	const links = [
+		{ skillId: "alive", tagIds: ["t-a"] },
+		{ skillId: "gone", tagIds: ["t-b"] },
+	];
+	const st = baseState({
+		view: "main", stale: [{ skillId: "gone", tagIds: ["t-b"] }],
+		data: { tags: TAGS, templates: [], workspaces: [], conversations: [], skillLinks: links },
+	});
+	const { Section } = boot(plainReact, st);
+	const tree = Section(st);
+	assert.equal(find(tree, (n) => n.props?.["data-skill-tag-stale-tag"] === "t-b").length, 1, "t-b 应被标红");
+	assert.equal(find(tree, (n) => n.props?.["data-skill-tag-stale-tag"] === "t-a").length, 0, "t-a 不含失效，不该标红");
+	const red = find(tree, (n) => n.props?.["data-skill-tag-stale-tag"] === "t-b");
+	assert.equal(red[0].props.style.color, RED);
+});
+
+test("主页面标签列表：展开后失效技能排在存活技能之后并标红", () => {
+	const links = [
+		{ skillId: "gone", tagIds: ["t-a"] },
+		{ skillId: "alive", tagIds: ["t-a"] },
+	];
+	const st = baseState({
+		view: "main", openTags: { "t-a": true }, stale: [{ skillId: "gone", tagIds: ["t-a"] }],
+		data: { tags: TAGS, templates: [], workspaces: [], conversations: [], skillLinks: links },
+	});
+	const { Section } = boot(plainReact, st);
+	const tree = Section(st);
+	const text = allText(tree);
+	assert.ok(text.indexOf("alive") < text.indexOf("gone"), "存活技能必须在失效技能之前");
+	const staleNode = find(tree, (n) => n.props?.["data-skill-tag-stale-skill"] === "gone");
+	assert.equal(staleNode.length, 1);
+	assert.equal(staleNode[0].props.style.color, RED, "失效技能名要标红");
+	assert.equal(staleNode[0].props.style.textDecoration, "line-through");
+});
+
+test("tag 联系 skill 左列：含失效技能的标签名标红", () => {
+	const links = [
+		{ skillId: "alive", tagIds: ["t-a"] },
+		{ skillId: "gone", tagIds: ["t-b"] },
+	];
+	const st = baseState({
+		view: "links", stale: [{ skillId: "gone", tagIds: ["t-b"] }],
+		data: { tags: TAGS, templates: [], workspaces: [], conversations: [], skillLinks: links },
+		linkTagId: "t-a",
+	});
+	const { Section } = boot(plainReact, st);
+	const tree = Section(st);
+	const red = find(tree, (n) => n.props?.["data-skill-tag-stale-tag"] === "t-b");
+	assert.equal(red.length, 1, "t-b 应被标红");
+	assert.equal(red[0].props.style.color, RED);
+});
+
+test("tag 联系 skill 右列：失效技能排在末尾并标红，且不给打开文件夹", () => {
+	const links = [{ skillId: "gone", tagIds: ["t-a", "t-b"] }, { skillId: "alive", tagIds: ["t-a"] }];
+	const st = baseState({
+		view: "links", skills: [{ name: "alive", path: "C:/s/alive/SKILL.md" }],
+		stale: [{ skillId: "gone", tagIds: ["t-a", "t-b"] }],
+		data: { tags: TAGS, templates: [], workspaces: [], conversations: [], skillLinks: links },
+		linkTagId: "t-a",
+	});
+	const { Section } = boot(plainReact, st);
+	const tree = Section(st);
+	const text = allText(tree);
+	assert.ok(text.indexOf("alive") < text.indexOf("gone"), "存活技能必须排在失效技能之前");
+	const staleNode = find(tree, (n) => n.props?.["data-skill-tag-stale-skill"] === "gone");
+	assert.equal(staleNode.length, 1);
+	// 红色落在技能名那个 span 上（行容器只负责置底与透明度）
+	const nameSpan = find(staleNode[0], (n) => n.type === "span" && n.props?.style?.color === RED);
+	assert.equal(nameSpan.length, 1, "失效技能名要标红");
+	assert.equal(nameSpan[0].props.style.textDecoration, "line-through");
+	assert.equal(find(tree, (n) => n.props?.["data-skill-tag-reveal"] === "gone").length, 0);
+	const rm = find(staleNode[0], (n) => n.type === "button" && texts(n).join("") === "移除");
+	assert.equal(rm.length, 1, "失效技能仍可移除");
+});
+
+test("SkillTagPage 底部失效区：没有失效项时不渲染该区域", () => {
+	const st = baseState({
+		view: "skilltags", skills: [{ name: "alpha" }], stale: [],
+		data: { tags: TAGS, templates: [], workspaces: [], conversations: [], skillLinks: [{ skillId: "alpha", tagIds: ["t-a"] }] },
+	});
+	const { Section } = boot(plainReact, st);
+	const tree = Section(st);
+	assert.equal(find(tree, (n) => n.props?.["data-skill-tag-stale-skill"]).length, 0);
+	assert.ok(!allText(tree).includes("失效"));
+});
+
+test("helpers.partitionStaleSkills：稳定分区，存活在前失效在后，内部保序", () => {
+	const helpers = loadHelpers();
+	const items = [{ skillId: "a" }, { skillId: "gone1" }, { skillId: "b" }, { skillId: "gone2" }];
+	const set = new Set(["gone1", "gone2"]);
+	const { alive, stale } = helpers.partitionStaleSkills(items, set);
+	// 注意：alive/stale 是 client.js 在 vm 沙箱里创建的数组（另一个 realm），
+	// 直接 deepEqual 会因 Array 构造器不同而失败 —— 用 Array.from 拉回本 realm。
+	assert.deepEqual(Array.from(alive, (x) => x.skillId), ["a", "b"], "存活项保序");
+	assert.deepEqual(Array.from(stale, (x) => x.skillId), ["gone1", "gone2"], "失效项保序");
+	const none = helpers.partitionStaleSkills(items, new Set());
+	assert.equal(none.alive.length, 4);
+	assert.equal(none.stale.length, 0);
+});
+
+test("helpers.tagHasStale：只看该标签自己的关联", () => {
+	const helpers = loadHelpers();
+	const links = [{ skillId: "alive", tagIds: ["t-a"] }, { skillId: "gone", tagIds: ["t-b"] }];
+	const set = new Set(["gone"]);
+	assert.equal(helpers.tagHasStale(links, "t-a", set), false);
+	assert.equal(helpers.tagHasStale(links, "t-b", set), true);
+	assert.equal(helpers.tagHasStale(links, "t-c", set), false);
+	assert.equal(helpers.tagHasStale(links, "t-b", new Set()), false, "没有失效集合时一律 false");
 });
 // ── 刷新技能列表 / 失效关联（2026-10-31） ────────────────────────────────
 //
