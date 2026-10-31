@@ -229,7 +229,46 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 						workspaceId: q("workspaceId") ?? null,
 					})) ?? []
 					: [];
-				return json(res, 200, { ok: true, skills });
+				// stale = 有标签关联、但这次发现不到的技能（通常是贡献它的插件被关了）。
+				// 只**报告**，不删：见 /skills/purge-stale 的注释。
+				const live = new Set(skills.map((s) => (typeof s === "string" ? s : s?.name)));
+				const stale = [...services._caches.skillLinks.values()]
+					.filter((l) => !live.has(l.skillId))
+					.map((l) => ({ skillId: l.skillId, tagIds: [...(l.tagIds ?? [])] }));
+				return json(res, 200, { ok: true, skills, stale });
+			}
+			// ── 「刷新技能列表」+「清理失效关联」 ─────────────────────────────
+			//
+			// 场景：某些技能由**别的插件**贡献（provider 注册进 ctx.skills，根本不落在
+			// 任何文件系统根里）。那个插件被 disable 之后，技能立刻消失，但插件这边
+			// 的 skillLinks 记录还留着 —— 界面上就表现为"技能还在、数字偏大"。
+			//
+			// 这里的口径：
+			//   GET  /skills            → 实时问宿主，顺带算出 stale（失效关联）
+			//   POST /skills/purge-stale → 只删这些失效关联记录（用户在界面上显式点）
+			//
+			// 为什么不在 GET 里顺手删：关联是用户手工打的标签，插件的临时缺席不等于
+			// 用户放弃它。默认只标记，删除必须显式触发。
+			if (path === "/skills/purge-stale" && method === "POST") {
+				const live = new Set(
+					((listSkills ? await listSkills(q("cwd") ?? undefined, {
+						conversationId: q("conversationId") ?? null,
+						workspaceId: q("workspaceId") ?? null,
+					}) : []) ?? []).map((s) => (typeof s === "string" ? s : s?.name)),
+				);
+				// 发现结果为空 = 宿主没就绪，此时"全是失效"是误判，绝不动数据。
+				if (live.size === 0) {
+					return json(res, 409, { ok: false, code: "NO_SKILLS", error: "当前发现到 0 个技能，拒绝清理（可能是宿主未就绪）" });
+				}
+				const wanted = Array.isArray(body?.skillIds) ? new Set(body.skillIds.map(String)) : null;
+				const removed = [];
+				for (const link of [...services._caches.skillLinks.values()]) {
+					if (live.has(link.skillId)) continue;          // 还活着 → 不动
+					if (wanted && !wanted.has(link.skillId)) continue; // 用户只勾了部分
+					removed.push(link.skillId);
+				}
+				for (const skillId of removed) await services.tags.unlinkSkill(skillId);
+				return json(res, 200, { ok: true, removed, count: removed.length });
 			}
 			// ── 「打开技能所在文件夹」 ─────────────────────────────────────
 			// 宿主没有暴露 shell/reveal 能力，由 src/reveal.js 自己拉起文件管理器。

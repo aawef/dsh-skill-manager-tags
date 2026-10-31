@@ -93,6 +93,8 @@ const baseState = (over = {}) => ({
 	loading: false, error: null,
 	data: { tags: TAGS, templates: TEMPLATES, skillLinks: [], workspaces: [], conversations: [] },
 	skills: [],
+	// 失效关联（有标签但当前发现不到）：计数口径与提示条都依赖它
+	stale: [],
 	newTagName: "", busy: false, notice: null, view: "templates",
 	linkTagId: null, tagSearch: "", skillSearch: "", pickOpen: false, pickSearch: "",
 	linkSkillName: null, skillTagSearch: "", skillPickSearch: "", skillTagPickOpen: false,
@@ -508,4 +510,81 @@ test("helpers.ownedTagsFirst：纯分区，不改内容也不丢项", () => {
 	// 拥有的 id 在 tags 里不存在（幽灵/已删标签）不得凭空插入
 	assert.equal(ids(helpers.ownedTagsFirst(tags, ["zzz"])), '["a","b","c"]');
 	assert.equal(ids(helpers.ownedTagsFirst([], ["a"])), "[]");
+});
+// ── 刷新技能列表 / 失效关联（2026-10-31） ────────────────────────────────
+//
+// 用户场景：某些技能由别的插件 provider 注册，根本不落在文件系统根里。那个
+// 插件被 disable 后技能立刻消失，但 skillLinks 记录还在 —— 旧实现把幽灵技能
+// 也算进「技能 (N)」，于是数字永远不降（本机 82 真 + 25 幽灵 = 107）。
+
+test("主页面有「刷新技能列表」按钮，且带稳定的 data 钩子", () => {
+	const { Section } = boot(plainReact, baseState({ view: "main" }));
+	const tree = Section(baseState({ view: "main" }));
+	const btn = find(tree, (n) => n.props?.["data-skill-tag-refresh"] === "1");
+	assert.equal(btn.length, 1, "主页面应有一个刷新按钮");
+	assert.equal(texts(btn[0]).join(""), "刷新技能列表");
+	assert.equal(typeof btn[0].props.onClick, "function", "按钮必须可点");
+});
+
+test("主页面：没有失效关联时不渲染提示条", () => {
+	const st = baseState({ view: "main", stale: [] });
+	const { Section } = boot(plainReact, st);
+	const tree = Section(st);
+	assert.equal(find(tree, (n) => n.props?.["data-skill-tag-purge"] === "1").length, 0);
+	assert.ok(!allText(tree).includes("当前发现不到"));
+});
+
+test("主页面：有失效关联时渲染提示条 + 清理按钮，且给出条数", () => {
+	const stale = [{ skillId: "gone-a", tagIds: ["t-a"] }, { skillId: "gone-b", tagIds: ["t-b", "t-c"] }];
+	const st = baseState({ view: "main", stale });
+	const { Section } = boot(plainReact, st);
+	const tree = Section(st);
+	const text = allText(tree);
+	assert.match(text, /有 2 个技能仍有标签关联，但当前发现不到/);
+	const purge = find(tree, (n) => n.props?.["data-skill-tag-purge"] === "1");
+	assert.equal(purge.length, 1);
+	assert.equal(texts(purge[0]).join(""), "清理失效关联");
+	assert.equal(purge[0].props.disabled, false, "不 busy 时清理按钮可点");
+});
+
+test("skill 联系 tag 页：技能计数只算真实技能，失效单独计数", () => {
+	const skills = [{ name: "alpha" }, { name: "beta" }];
+	const stale = [{ skillId: "gone-a", tagIds: ["t-a"] }, { skillId: "gone-b", tagIds: [] }];
+	const st = baseState({
+		view: "skilltags", skills, stale,
+		data: { tags: TAGS, templates: [], workspaces: [], conversations: [], skillLinks: [{ skillId: "alpha", tagIds: ["t-a"] }] },
+	});
+	const { Section } = boot(plainReact, st);
+	const text = allText(Section(st));
+	assert.match(text, /技能 \(2\)/, "计数必须是 2（真实技能），不含幽灵");
+	assert.match(text, /失效 2/, "失效数量单独显示");
+	assert.ok(!/技能 \(4\)/.test(text), "不得把幽灵算进总数");
+});
+
+test("skill 联系 tag 页：失效技能单列且不混进真实技能行", () => {
+	const skills = [{ name: "alpha" }];
+	const stale = [{ skillId: "gone-a", tagIds: ["t-a"] }];
+	const st = baseState({
+		view: "skilltags", skills, stale,
+		data: { tags: TAGS, templates: [], workspaces: [], conversations: [], skillLinks: [{ skillId: "gone-a", tagIds: ["t-a"] }] },
+	});
+	const { Section } = boot(plainReact, st);
+	const tree = Section(st);
+	const text = allText(tree);
+	assert.match(text, /失效 1 个（有标签关联，但当前发现不到）/);
+	assert.match(text, /gone-a/);
+	// 失效技能不给「打开文件夹」（本机没有这个文件，点了必然失败）
+	assert.equal(find(tree, (n) => n.props?.["data-skill-tag-reveal"] === "gone-a").length, 0);
+});
+
+test("skill 联系 tag 页：选中已失效的技能时给出解释而不是空白", () => {
+	const stale = [{ skillId: "gone-a", tagIds: ["t-a"] }];
+	const st = baseState({
+		view: "skilltags", skills: [{ name: "alpha" }], stale, linkSkillName: "gone-a",
+		data: { tags: TAGS, templates: [], workspaces: [], conversations: [], skillLinks: [{ skillId: "gone-a", tagIds: ["t-a"] }] },
+	});
+	const { Section } = boot(plainReact, st);
+	const text = allText(Section(st));
+	assert.match(text, /「gone-a」当前发现不到/);
+	assert.match(text, /重新启用插件后自动恢复可见/);
 });

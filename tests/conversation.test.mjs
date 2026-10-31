@@ -450,6 +450,80 @@ test("API：没有可继承的工作区时明确报错", async () => {
 		await new Promise((r) => server.close(r));
 	}
 });
+// ── /skills 的 stale 报告 与 /skills/purge-stale（2026-10-31） ──────────
+//
+// 语义：stale 只**报告**不删除；purge 必须显式调用，且发现结果为 0 时拒绝
+// （避免宿主未就绪时把全部关联当成失效删掉）。
+
+/** 起一个临时 HTTP 服务跑 handler，返回 call/close 两个小工具。 */
+async function withServer(handler, fn) {
+	const server = (await import("node:http")).createServer((req, res) => void handler(req, res));
+	await new Promise((r) => server.listen(0, r));
+	const port = server.address().port;
+	const call = async (path, body) => {
+		const r = await fetch(`http://127.0.0.1:${port}/skill-tag/api${path}`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body ?? {}),
+		});
+		return await r.json();
+	};
+	try { return await fn(call); } finally { await new Promise((r) => server.close(r)); }
+}
+
+test("API：/skills 报告 stale（有标签关联但当前发现不到），只报不删", async () => {
+	const { services: s } = await boot();
+	// alpha 存活；gone 的贡献插件已关闭 → 只剩标签关联
+	const handler = createApiHandler(s, null, () => [{ name: "alpha", path: null }], () => null);
+	await withServer(handler, async (call) => {
+		const d = await call("/skills", { cwd: null });
+		assert.equal(d.ok, true);
+		assert.deepEqual(d.skills.map((x) => x.name), ["alpha"]);
+		const staleIds = d.stale.map((x) => x.skillId).sort();
+		// boot() 里建了两条关联：alpha→t1、beta→t2；beta 当前发现不到
+		assert.deepEqual(staleIds, ["beta"]);
+		assert.deepEqual(d.stale[0].tagIds, ["t2"], "stale 要带上保留的标签，便于用户判断");
+		// GET 绝不删数据
+		assert.deepEqual(s.tags.tagsForSkill("beta"), ["t2"]);
+	});
+});
+
+test("API：/skills/purge-stale 只删失效记录，保留存活技能的关联", async () => {
+	const { services: s } = await boot();
+	const handler = createApiHandler(s, null, () => [{ name: "alpha" }], () => null);
+	await withServer(handler, async (call) => {
+		const d = await call("/skills/purge-stale", {});
+		assert.equal(d.ok, true);
+		assert.deepEqual(d.removed, ["beta"]);
+		assert.equal(d.count, 1);
+		assert.deepEqual(s.tags.tagsForSkill("beta"), [], "失效关联已删除");
+		assert.deepEqual(s.tags.tagsForSkill("alpha"), ["t1"], "存活技能的关联不受影响");
+	});
+});
+
+test("API：发现结果为 0 时 purge-stale 拒绝执行（宿主未就绪保护）", async () => {
+	const { services: s } = await boot();
+	const handler = createApiHandler(s, null, () => [], () => null);
+	await withServer(handler, async (call) => {
+		const d = await call("/skills/purge-stale", {});
+		assert.equal(d.ok, false);
+		assert.equal(d.code, "NO_SKILLS");
+		assert.deepEqual(s.tags.tagsForSkill("alpha"), ["t1"], "拒绝执行时绝不动数据");
+		assert.deepEqual(s.tags.tagsForSkill("beta"), ["t2"]);
+	});
+});
+
+test("API：purge-stale 带 skillIds 时只删用户勾选的那些", async () => {
+	const { services: s } = await boot();
+	await s.tags.linkSkill("gone2", ["t1"]);
+	const handler = createApiHandler(s, null, () => [{ name: "alpha" }], () => null);
+	await withServer(handler, async (call) => {
+		// 失效的有 beta 与 gone2，只勾 beta
+		const d = await call("/skills/purge-stale", { skillIds: ["beta"] });
+		assert.deepEqual(d.removed, ["beta"]);
+		assert.deepEqual(s.tags.tagsForSkill("gone2"), ["t1"], "没勾选的失效关联必须保留");
+	});
+});
 // ── 标签实体的变更必须同步写回对话快照（2026-10-31 补） ─────────────────
 //
 // own 是「冻结的配置」，但标签的名称/存废是**全局**的。若不写回，冻结住的表达式
