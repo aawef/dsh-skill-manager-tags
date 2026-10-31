@@ -48,6 +48,7 @@ export function createServices(repo, opts = {}) {
 	const templates = new Map();
 	const workspaces = new Map();
 	const conversations = new Map(); // conversationId -> live ConversationState
+	const syncMeta = new Map(); // key -> {key, rev, updatedAt}
 
 	async function loadAll() {
 		for (const [k, v] of await repo.listTags()) tags.set(k, v);
@@ -55,6 +56,7 @@ export function createServices(repo, opts = {}) {
 		for (const [k, v] of await repo.listTemplates()) templates.set(k, v);
 		for (const [k, v] of await repo.listWorkspaces()) workspaces.set(k, v);
 		for (const [k, v] of await repo.listConversations()) conversations.set(k, deserializeConversation(v));
+		for (const [k, v] of await repo.listSyncMeta()) syncMeta.set(k, v);
 		// 旧数据回填：历史模板只有 config、没有 expression —— 反推出表达式并回写，
 		// 保证"再次编辑必须回显"对存量数据同样成立。
 		try {
@@ -69,6 +71,50 @@ export function createServices(repo, opts = {}) {
 			if (n > 0) appLog?.(`[skill-tag] migrated ${n} legacy workspace(s) to expression form`);
 		} catch (e) {
 			appLog?.(`[skill-tag] workspace migration skipped: ${e?.message ?? e}`);
+		}
+	}
+
+	// ── 对话快照（own）的联动维护 ────────────────────────────────────────
+	//
+	// own 是"冻结的配置"，但**标签实体本身**是全局的：改名/删除标签必须同步
+	// 写回 own，否则冻结住的表达式会指向一个不存在的标签名，用户下次打开
+	// 「tag 设置」就会看到"标签不存在"，且保存被拒。
+	//
+	// 注意这**不是**"自动继承工作区"：改的是标签的名字/存废，不是条件本身。
+	// 条件（哪些标签、手动列表、禁用列表）一律保持调用方原样。
+
+	/**
+	 * 对每个带 own 的对话快照应用一个纯变换，有实际变化才落库。
+	 * @param {(own: object) => string|null} transform 返回新表达式或 null 表示不改
+	 */
+	async function renameTagInOwnConfigs(transform) {
+		for (const [cid, conv] of conversations) {
+			if (!conv.own) continue;
+			const next = transform(conv.own);
+			if (typeof next !== "string" || next === conv.own.expression) continue;
+			conv.own.expression = next;
+			await repo.putConversation(serializeConversation(conv));
+		}
+	}
+
+	/**
+	 * 全局删除标签后，把该标签从每个对话快照的 config/expression 里摘掉。
+	 * 与 workspaces 的处理保持一致（domainRemoveTagEntirely + removeTagFromExpression），
+	 * 差别只是数据挂在 own 上。
+	 */
+	async function dropTagFromOwnConfigs(tagId, removedName) {
+		for (const [cid, conv] of conversations) {
+			if (!conv.own) continue;
+			let changed = false;
+			if (conv.own.config) {
+				domainRemoveTagEntirely(conv.own.config, tagId);
+				changed = true;
+			}
+			if (removedName && conv.own.expression) {
+				const next = removeTagFromExpression(conv.own.expression, removedName);
+				if (next !== conv.own.expression) { conv.own.expression = next; changed = true; }
+			}
+			if (changed) await repo.putConversation(serializeConversation(conv));
 		}
 	}
 
@@ -113,6 +159,10 @@ export function createServices(repo, opts = {}) {
 						await repo.putWorkspace(ws);
 					}
 				}
+				// 对话自己的快照（own）也按名称引用 → 必须一并改写。
+				// 2026-10-31 补：此前只写 templates/workspaces，冻结的 own 会留下
+				// 指向旧名的表达式，下次打开「tag 设置」直接报"标签不存在"。
+				await renameTagInOwnConfigs((own) => renameTagInExpression(own.expression ?? "", oldName, newName));
 			}
 		},
 		list() { return [...tags.values()]; },
@@ -167,6 +217,11 @@ export function createServices(repo, opts = {}) {
 				}
 				await repo.putWorkspace(ws);
 			}
+			// 对话自己的快照（own）：同样摘除该标签。
+			// 2026-10-31 补：此前漏了这一段，导致 own.config 里残留已经删除的
+			// tagId（本机实测 3 条），而 hasFilter 仍为 true、candidates 变空
+			// → 那条对话会把**全部技能**都屏蔽掉，且界面上看不出原因。
+			await dropTagFromOwnConfigs(tagId, removedName);
 			// conversations: tag state + OR/AND + inherited groups + block/exempt records
 			for (const [cid, conv] of conversations) {
 				const removed = domainRemoveTagEntirely(conv.config, tagId);
@@ -177,7 +232,7 @@ export function createServices(repo, opts = {}) {
 				}
 				pruneGroups(conv.inherited.groups);
 				conv.inherited.groups = conv.inherited.groups.filter((g) => new Set(g.tagIds).size >= 2);
-				await repo.putConversation(serializeConversation({ ...conv, conversationId: cid }));
+				await repo.putConversation(serializeConversation(conv));
 			}
 			tags.delete(tagId);
 			await repo.deleteTag(tagId);
@@ -553,20 +608,53 @@ export function createServices(repo, opts = {}) {
 		return new Map([...tags.values()].map((t) => [t.tagId, t.name]));
 	}
 
+	// ── MetaService：插件级里程碑（当前只有 installed_at）────────────────
+	//
+	// installed_at = 本版**首次运行**的时刻，一旦写下永不改变。
+	// 三种对话的判定依赖它（见 lib/index.js seedOwnOnBirth）。
+	const INSTALLED_AT_KEY = "installed_at";
+	const metaService = {
+		/** 读已记录的安装时刻（ISO 字符串），没有则 null。 */
+		installedAt() {
+			return syncMeta.get(INSTALLED_AT_KEY)?.value ?? null;
+		},
+		/** 首次运行时写入；已有则原样返回（幂等，永不覆盖）。 */
+		async ensureInstalledAt(now = new Date().toISOString()) {
+			const existing = syncMeta.get(INSTALLED_AT_KEY);
+			if (existing?.value) return existing.value;
+			const rec = { key: INSTALLED_AT_KEY, rev: 1, updatedAt: now, value: now };
+			syncMeta.set(INSTALLED_AT_KEY, rec);
+			await repo.putSyncMeta(rec);
+			appLog?.(`[skill-tag] installed_at recorded: ${now}`);
+			return now;
+		},
+	};
+
 
 	// ── ConversationService (spec §7/§8) ─────────────────────────────────────
+	//
+	// 「own 只写一次」不变量（2026-10-31 统一口径）：
+	//
+	//   一条对话的 own 快照只允许在**两个**时刻产生：
+	//     ① 出生（新建对话 / 首次观察到 createdAt ≥ installedAt 的会话）→ 继承一次
+	//     ② 用户点「继承工作区配置」→ 覆盖
+	//
+	//   除此之外永不自动写入。尤其：**打开「管理标签（对话）」不是写入时机**
+	//   （旧实现会在打开瞬间用当前工作区播种，导致"看一眼就被冻结"，且冻结值
+	//   取决于看的先后顺序 —— 这就是 0.1.8 之前「改工作区标签有些对话会被改」
+	//   的根因之一）。
+	//
+	//   own === null 的语义固定为「从未配置过 = 空 = 掌握全部技能」，运行时
+	//   绝不再回退到工作区实时配置（见 lib/index.js effectiveSkillsConfig）。
 	const conversationService = {
-		/** §8.1 create-with-workspace init */
+		/** 新建对话（出生）：绑工作区则继承一次。 */
 		async create(conversationId, workspaceId = null) {
 			const conv = createConversationState();
 			conv.conversationId = conversationId;
-			conv.own = emptyOwnConfig();
 			if (workspaceId) {
 				const ws = workspaces.get(workspaceId);
 				if (!ws) throw new Error(`workspace '${workspaceId}' not found`);
 				initFromWorkspace(conv, ws.config, workspaceId);
-				// 新创建对话 = 自动继承工作区配置（用户口径：新建时才自动继承，
-				// 之后工作区再改不会波及本对话，要重新同步必须点「继承工作区配置」）
 				conv.own = ownConfigFromWorkspace(ws);
 			}
 			conversations.set(conversationId, conv);
@@ -576,24 +664,41 @@ export function createServices(repo, opts = {}) {
 		get(conversationId) { return conversations.get(conversationId); },
 
 		/**
-		 * 取（必要时创建）对话的配置快照 —— 历史行没有 own 字段。
-		 *
-		 * seedWorkspaceId：历史对话第一次被打开时，用它绑定的工作区**播种**一份
-		 * 快照（= 用户口径里的「默认继承」）。播种只发生一次：之后工作区再改，
-		 * 本对话不受影响；要重新同步只能点「继承工作区配置」按钮。
+		 * 取（必要时**建行**）对话记录。**不写 own**：own 只由出生播种与
+		 * 「继承工作区配置」写。历史对话第一次被打开时 own 仍是 null（= 全部技能），
+		 * 直到用户显式继承或编辑。
 		 */
-		async ensureOwn(conversationId, seedWorkspaceId = null) {
-			// 播种只在「新建这一行」时有意义：先看能不能拿到工作区记录，
-			// 拿不到就别硬绑（避免 create 抛错），退回空快照。
-			const seed = seedWorkspaceId ? workspaces.get(seedWorkspaceId) ?? null : null;
+		async ensureOwn(conversationId) {
 			let conv = conversations.get(conversationId);
-			// 与 /conversations/ensure 语义一致：不存在就建一个对话
-			if (!conv) conv = await this.create(conversationId, seed ? seedWorkspaceId : null);
-			if (!conv.own) {
-				conv.own = seed ? ownConfigFromWorkspace(seed) : emptyOwnConfig();
+			if (!conv) {
+				conv = createConversationState();
+				conv.conversationId = conversationId;
+				conversations.set(conversationId, conv);
 				await repo.putConversation(serializeConversation(conv));
 			}
 			return conv;
+		},
+
+		/**
+		 * 出生播种（幂等）：只在 own 为 null 且能解析到工作区时继承一次。
+		 * 调用方负责「是不是新出生」的判定（见 lib/index.js seedOwnOnBirth）。
+		 * @returns {Promise<boolean>} 是否真的播种了
+		 */
+		async seedOwnOnBirth(conversationId, workspaceId) {
+			if (!conversationId || !workspaceId) return false;
+			const ws = workspaces.get(workspaceId);
+			if (!ws) return false; // 工作区还没登记 → 留空，下次再说（留空 = 全部技能，与"没播种"一致）
+			const conv = await this.ensureOwn(conversationId);
+			if (conv.own) return false; // 已有配置，绝不覆盖
+			conv.own = ownConfigFromWorkspace(ws);
+			if (!conv.inherited.workspaceId) conv.inherited.workspaceId = ws.workspaceId;
+			await repo.putConversation(serializeConversation(conv));
+			return true;
+		},
+
+		/** 该对话是否已经有自己的配置快照（own 存在即"配置过"）。 */
+		isConfigured(conversationId) {
+			return Boolean(conversations.get(conversationId)?.own);
 		},
 
 		/** 对话自己的配置快照（只读视图；保证字段完整） */
@@ -632,9 +737,20 @@ export function createServices(repo, opts = {}) {
 			return conv;
 		},
 
+		/**
+		 * 写路径专用：取对话并保证 own 是一个可编辑对象。
+		 * 只有**用户在对话页里动手编辑**才会走到这里 —— 这是除「出生」与
+		 * 「继承」之外的第三种合法写入时机（用户显式操作，不是自动同步）。
+		 */
+		async ownForEdit(conversationId) {
+			const conv = await this.ensureOwn(conversationId);
+			if (!conv.own) conv.own = emptyOwnConfig();
+			return conv;
+		},
+
 		/** 保存对话的标签条件表达式（空串 = 无条件 = 掌握全部技能）。 */
 		async setOwnExpression(conversationId, expression) {
-			const conv = await this.ensureOwn(conversationId);
+			const conv = await this.ownForEdit(conversationId);
 			const v = validateExpression(expression, { tags: [...tags.values()], allowEmpty: true });
 			if (!v.ok) {
 				const err = new Error(v.errors[0]?.message ?? "表达式非法");
@@ -650,7 +766,7 @@ export function createServices(repo, opts = {}) {
 
 		// ── 对话页右列：手动添加 / 禁用 / 恢复 ──────────────────────────
 		async addOwnManualSkill(conversationId, skillName) {
-			const conv = await this.ensureOwn(conversationId);
+			const conv = await this.ownForEdit(conversationId);
 			const name = String(skillName ?? "").trim();
 			if (!name) throw new Error("技能名不能为空");
 			if (conv.own.disabledSkills.includes(name)) throw new Error(`技能 '${name}' 已被禁用，请先恢复`);
@@ -659,13 +775,13 @@ export function createServices(repo, opts = {}) {
 			return conv;
 		},
 		async removeOwnManualSkill(conversationId, skillName) {
-			const conv = await this.ensureOwn(conversationId);
+			const conv = await this.ownForEdit(conversationId);
 			conv.own.manualSkills = conv.own.manualSkills.filter((s) => s !== skillName);
 			await repo.putConversation(serializeConversation(conv));
 			return conv;
 		},
 		async disableOwnSkill(conversationId, skillName) {
-			const conv = await this.ensureOwn(conversationId);
+			const conv = await this.ownForEdit(conversationId);
 			const name = String(skillName ?? "").trim();
 			if (!name) throw new Error("技能名不能为空");
 			conv.own.manualSkills = conv.own.manualSkills.filter((s) => s !== name);
@@ -674,7 +790,7 @@ export function createServices(repo, opts = {}) {
 			return conv;
 		},
 		async enableOwnSkill(conversationId, skillName) {
-			const conv = await this.ensureOwn(conversationId);
+			const conv = await this.ownForEdit(conversationId);
 			conv.own.disabledSkills = conv.own.disabledSkills.filter((s) => s !== skillName);
 			await repo.putConversation(serializeConversation(conv));
 			return conv;
@@ -794,11 +910,12 @@ export function createServices(repo, opts = {}) {
 		templates: templateStore,
 		workspaces: workspaceService,
 		conversations: conversationService,
+		meta: metaService,
 		ready: loadAll,
 		/** repository back-reference (api layer: template create) */
 		_repo: repo,
 		/** exposed for tests/inspection */
-		_caches: { tags, skillLinks, templates, workspaces, conversations },
+		_caches: { tags, skillLinks, templates, workspaces, conversations, syncMeta },
 	};
 }
 

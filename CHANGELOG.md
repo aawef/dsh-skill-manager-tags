@@ -1,5 +1,102 @@
 # CHANGELOG
 
+## 0.1.9 — 2026-10-31 修复：改工作区标签会波及部分对话的标签
+
+### 症状
+
+在「工作区 → 管理标签」改了标签条件后：
+
+- **一些对话**的标签跟着变了；
+- **另一些对话**完全不变；
+- 打开某个对话的「管理标签」，它又会自动变成工作区当前那套，并显示
+  「继承来源: …（改动不影响工作区）」，像是用户点过继承按钮。
+
+### 根因
+
+一条对话在插件里存在**两层**互不相认的标签状态：
+
+1. `conv.own` 快照（「对话 → 管理标签」的配置，冻结）；
+2. `conv.tags / conv.config / conv.inherited`（旧的四区同步状态）。
+
+而运行时口径 `lib/index.js:effectiveSkillsConfig(own, ws)` 是：
+
+```js
+return pick(own) ?? pick(ws) ?? null;   // own 为 null → 吃工作区实时值
+```
+
+于是"这条对话会不会被改"取决于**它有没有 own 记录**，而 own 只在三个地方产生
+（新建对话 / 点继承 / **第一次打开「管理标签」**）：
+
+- 有 own → 冻结，改工作区不变；
+- 无 own → 实时跟随工作区，改工作区就变 ← 用户报告的 bug。
+
+`src/api.js` 的 `/conversations/config` 还在打开时用当前工作区**播种**一份 own
+（`ensureOwn(cid, wid)`），所以"点开看一眼"也会让对话定格，且定格值取决于点开的
+先后顺序。本机实测：321 个会话里 28 条被播种、293 条实时跟随，同一个操作三种表现。
+
+### 改动（统一口径：own 只写一次）
+
+用户确认的三种对话：
+
+| # | 类型 | `own` | 可见技能 | 工作区再改 |
+| --- | --- | --- | --- | --- |
+| ① | 插件安装前就存在 | 保持 `null` | 空条件 = **全部技能** | 不受影响 |
+| ② | 刚创建的新对话 | 出生时继承一次 | 继承工作区三件套 | 不再跟随 |
+| ③ | 安装后创建、已存在一阵 | 已冻结 | 冻结值不变 | 不受影响 |
+
+落地：
+
+- **`lib/index.js` `effectiveSkillsConfig(own)`**：删除 `?? pick(ws)` 回退。
+  `own === null` 一律按空条件处理（= 掌握全部技能），永不读工作区实时配置。
+- **`lib/index.js` `recomputeDenials`**：不再解析 wsId，只认 `conv.own`。
+- **`src/api.js` `/conversations/config`**：改成纯读（`ensureOwn(cid)`），
+  打开管理标签不再播种；载荷新增 `configured`（该对话是否有 own）与
+  `expressionIssue`（只读体检：已冻结的表达式是否引用了已删除的标签）。
+- **`src/service.js`**：
+  - `ensureOwn()` 只保证对话行存在，**不写 own**；
+  - 新增 `seedOwnOnBirth(cid, wsId)`（幂等出生播种）、`isConfigured(cid)`、
+    `ownForEdit(cid)`（用户显式编辑时才建 own）；
+  - `create()` 绑不到工作区时不再写空快照（保持 `null`）。
+- **`lib/index.js` 新增 `maybeSeedOwn()`**：挂在读路径 `refreshBySession` 上，
+  用 `session.header.createdAt >= installed_at` 判定"是不是新出生的对话"。
+  **不用 `agent/created` 事件判定** —— 宿主对恢复已有会话同样发该事件
+  （`dsh-agent` 的 `announce(agent, "startup")` 是唯一路径），区分不了新建与打开。
+  解析不到工作区时**先不写**（留 null = 全部技能，不会把对话钉死）。
+- **新增 `installed_at` 里程碑**：`src/service.js` 的 `meta` 服务 +
+  `src/storage/schema.js` 的 `sync_meta.value` 字段。本版首次运行时写入，永不覆盖。
+- **`src/service.js` 补两个同源缺陷**（此前只写 templates/workspaces，漏了对话快照）：
+  - `rename()`：改名时同步改写所有 `conv.own.expression`；
+  - `globalDelete()`：删标签时同步从 `conv.own.config/expression` 摘除，
+    不再残留悬空 tagId。
+
+### 为什么不改历史数据
+
+用户口径：**保留已有配置，哪怕它被旧版 bug 污染过**。所以本版**零写入**：
+
+- 有 own 的对话原样保留（哪怕表达式已失效）；
+- 没有 own 的对话保持 null → 空 → 全部技能，天然符合类型 ①。
+  本机实测 152 个用户对话中 123 条属于这种，修复后它们不再跟着工作区漂移。
+- 对 3 条 own 已失效的对话（`session-3326ee40 / 1820ed3a / 08f8a20b`，
+  表达式引用了已删除的标签），只在界面上**只读提示**，不改数据。
+
+### 验证
+
+- `tests/conversation.test.mjs`：22 → 25 项。改 3 项旧断言（打开不再播种、
+  不绑工作区不写 own、历史行保持 null），新增出生播种幂等 / 改名回写 / 删除回写 /
+  installed_at 4 项。
+- `tests/runtime.test.mjs`：31 项全绿（改 3 项 `effectiveSkillsConfig` 断言）。
+- `tests/__conv-render.mjs`：14 → 16 项。新增「从未配置」与「表达式失效提示」两项。
+- 全量 `node --test "tests/*.test.mjs" "tests/*.mjs"`：**209 项，204 通过**；
+  5 项失败全部是 `tests/skilltags.test.mjs` 里 `mkdtemp` 在沙箱下 `EPERM` 的
+  历史问题（未触碰 `src/reveal.js`）。
+- 用本机真实 `skill_tag.json` 复算：改成工作区条件后，30 条有 own 的对话
+  `effective.orTags` 各自不变，不再出现"部分对话被改"。
+
+### 生效方式
+
+改的是宿主侧（`lib/index.js` + `src/*`），需**重启桌面进程**。
+`lib/client.js` 同时改了（新增「尚未配置过」文案与失效提示），刷新页面即可看到。
+
 ## 0.1.8 — 2026-10-28 修复：README 预览图间歇性加载失败（改用 jsDelivr）
 
 ### 症状

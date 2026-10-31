@@ -15,6 +15,9 @@ import {
 const EMPTY = { orTags: [], andGroups: [] };
 const UNIVERSE = ["alpha", "beta", "gamma", "delta"];
 
+// 2026-10-31 统一口径：own 存在即权威；own 为 null = 从未配置过 = 空条件.
+// 工作区**不再**参与运行时生效配置（只在出生播种 / 继承按钮里用到）。
+
 test("effectiveSkillsConfig：own 存在 → 用 own（即使它是空快照）", () => {
 	const own = { config: EMPTY, manualSkills: [], disabledSkills: [] };
 	const ws = { config: { orTags: ["t1"], andGroups: [] }, manualSkills: ["gamma"], disabledSkills: ["beta"] };
@@ -23,17 +26,19 @@ test("effectiveSkillsConfig：own 存在 → 用 own（即使它是空快照）"
 	assert.deepEqual(eff.manualSkills, []);
 });
 
-test("effectiveSkillsConfig：own 为 null → 退回工作区", () => {
+test("effectiveSkillsConfig：own 为 null → 空条件（掌握全部技能），绝不退回工作区", () => {
 	const ws = { config: { orTags: ["t1"], andGroups: [] }, manualSkills: ["gamma"], disabledSkills: ["beta"] };
 	const eff = effectiveSkillsConfig(null, ws);
-	assert.deepEqual(eff.config.orTags, ["t1"]);
-	assert.deepEqual(eff.manualSkills, ["gamma"]);
-	assert.deepEqual(eff.disabledSkills, ["beta"]);
+	assert.deepEqual(eff.config, EMPTY, "工作区配置不再实时下发到未配置过的对话");
+	assert.deepEqual(eff.manualSkills, []);
+	assert.deepEqual(eff.disabledSkills, []);
 });
 
-test("effectiveSkillsConfig：两者都空 → null（不筛）", () => {
-	assert.equal(effectiveSkillsConfig(null, null), null);
-	assert.equal(effectiveSkillsConfig(undefined, undefined), null);
+test("effectiveSkillsConfig：两者都空 → 仍是空条件对象（不是 null）", () => {
+	// 返回形态固定为 {config, manualSkills, disabledSkills}：调用方无需再做 null 判断,
+	// 空条件本身在 workspaceSkillView 里就等价于"掌握全部技能"。
+	assert.deepEqual(effectiveSkillsConfig(null, null).config, EMPTY);
+	assert.deepEqual(effectiveSkillsConfig(undefined, undefined).config, EMPTY);
 });
 
 test("effectiveSkillsConfig：字段缺失时补默认值，不返回 undefined 字段", () => {

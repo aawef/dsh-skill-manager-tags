@@ -159,6 +159,20 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 	}
 
 	/**
+	 * 该对话已保存的表达式是否仍然有效（引用的标签是否还存在）。
+	 * 只用于**提示**，绝不修改数据：被冻结的历史快照可能引用了已删除/改名的
+	 * 标签，用户有权保留原样，但保存时必须能看到原因。
+	 * @returns {{ok:boolean, message:string|null}}
+	 */
+	function ownExpressionIssue(c) {
+		const expr = String(c?.expression ?? "");
+		if (expr.trim() === "") return { ok: true, message: null };
+		const v = services.templates.validate(expr, { allowEmpty: true });
+		if (v.ok) return { ok: true, message: null };
+		return { ok: false, message: v.errors?.[0]?.message ?? "表达式非法" };
+	}
+
+	/**
 	 * 对话版双列界面的统一载荷（与 /workspaces/skills 同形，前端复用同一个面板）。
 	 */
 	async function convPayload(conversationId, workspaceId) {
@@ -172,12 +186,18 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 			ok: true,
 			conversationId,
 			workspaceId,
+			// configured=false 表示该对话**从未配置过**（own 为 null）：
+			// 语义是「空 = 掌握全部技能」，且界面上不该显示成"继承来源为 null"。
+			configured: services.conversations.isConfigured(conversationId),
 			expression: c?.expression ?? "",
 			config: c?.config ?? { orTags: [], andGroups: [] },
 			manualSkills: c?.manualSkills ?? [],
 			disabledSkills: c?.disabledSkills ?? [],
 			inheritedAt: c?.inheritedAt ?? null,
 			sourceWorkspaceId: c?.sourceWorkspaceId ?? null,
+			// 只读提示：已冻结的表达式引用了不存在的标签（旧版 bug 遗留）。
+			// 不自动修复 —— 数据是用户意志，界面上告诉他原因即可。
+			expressionIssue: ownExpressionIssue(c),
 			candidates: ctxInfo.candidates,
 			universe: ctxInfo.universe,
 			catalog: ctxInfo.catalog,
@@ -451,8 +471,10 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 			if (path === "/conversations/config" && (method === "GET" || method === "POST")) {
 				const cid = q("conversationId");
 				const wid = workspaceIdForConversation(cid);
-				// 历史对话第一次打开：用所属工作区播种一份快照（「默认继承」只发生一次）
-				await services.conversations.ensureOwn(cid, wid);
+				// 打开「管理标签（对话）」是**纯读**：只保证对话行存在，绝不播种 own。
+				// （旧实现在这里用当前工作区播种，导致"看一眼就被冻结"，且冻结值
+				//  取决于点开的先后顺序 —— 是「改工作区标签波及部分对话」的根因之一。）
+				await services.conversations.ensureOwn(cid);
 				return json(res, 200, await convPayload(cid, wid));
 			}
 			if (path === "/conversations/inherit" && method === "POST") {

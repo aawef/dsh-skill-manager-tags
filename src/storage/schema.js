@@ -124,10 +124,20 @@ export const conversationRecord = z.object({
 		.nullable(),
 });
 
+// 同步元数据（键值小抽屉）。目前只放一个键：
+//   "installed_at" —— 本插件**本版首次运行**的时刻（ISO 字符串）。
+//
+// 用途（2026-10-31 三种对话口径）：判定一条对话属于「插件安装前就存在」还是
+// 「安装后新建」。判据是 session.header.createdAt（宿主保证恒存在）与
+// installed_at 的比较，而不是 agent/created 事件 —— 因为宿主对**恢复**已有
+// 会话同样会发 agent/created（dsh-agent 的 announce(agent, "startup")），
+// 事件本身无法区分"新建"与"打开旧对话"。
 export const syncMetaRecord = z.object({
 	key: z.string(),
 	rev: z.number().int().nonnegative(),
 	updatedAt: z.string(),
+	// 可选值载荷（旧行没有这个字段）
+	value: z.string().optional(),
 });
 
 // ── domain spec ─────────────────────────────────────────────────────────────

@@ -100,13 +100,17 @@ test("工作区后续改动不会自动流入已存在的对话", async () => {
 	assert.deepEqual(after.manualSkills, before.manualSkills);
 });
 
-test("不绑定工作区的新建对话 = 空快照（无条件）", async () => {
+test("不绑定工作区的新建对话 = 未配置（own 保持 null，语义即无条件）", async () => {
 	const { services: s } = await boot();
 	const conv = await s.conversations.create("conv-2", null);
-	assert.equal(conv.own.expression, "");
-	assert.deepEqual(conv.own.config, EMPTY);
-	assert.deepEqual(conv.own.manualSkills, []);
-	assert.equal(conv.own.sourceWorkspaceId, null);
+	// 2026-10-31：own 只在"能继承到工作区"时写入。绑不到工作区就不写，
+	// 让 own 保持 null —— 运行时语义同样是"空条件 = 掌握全部技能"，
+	// 但不会把一条对话钉死成"已配置"。
+	assert.equal(conv.own, null);
+	assert.equal(s.conversations.isConfigured("conv-2"), false);
+	assert.deepEqual(s.conversations.own("conv-2").config, EMPTY);
+	assert.deepEqual(s.conversations.own("conv-2").manualSkills, []);
+	assert.equal(s.conversations.own("conv-2").sourceWorkspaceId, null);
 });
 
 test("继承按钮：覆盖标签条件 + 手动添加 + 禁用（整体替换）", async () => {
@@ -232,7 +236,7 @@ test("两个对话互不干扰（配置隔离）", async () => {
 	assert.deepEqual(s.conversations.own("conv-b").disabledSkills, ["beta"]);
 });
 
-test("会话历史行（无 own）在 ensureOwn 时补空快照", async () => {
+test("会话历史行（无 own）打开管理标签后 own 仍为 null（不播种）", async () => {
 	const { services: s, repo } = await boot();
 	await seedWorkspace(s);
 	// 模拟历史对话行：只有 inherited，没有 own
@@ -246,23 +250,35 @@ test("会话历史行（无 own）在 ensureOwn 时补空快照", async () => {
 	await s2.ready();
 	assert.equal(s2.conversations.get("legacy-conv").own, null);
 
-	// 直接打开（不带播种）→ 空快照，不自动吃工作区
+	// 2026-10-31：打开「管理标签（对话）」是纯读，**不播种**。
+	// 旧实现会在打开瞬间用当前工作区播种（"看一眼就被冻结"），已废弃。
 	await s2.conversations.ensureOwn("legacy-conv");
-	assert.deepEqual(s2.conversations.get("legacy-conv").own, emptyOwnConfig());
+	assert.equal(s2.conversations.get("legacy-conv").own, null, "打开不等于配置");
+	assert.equal(s2.conversations.isConfigured("legacy-conv"), false);
 
-	// 带播种工作区打开 → 只播种一次（这是「默认继承」的落点）
-	await repo.putConversation({
-		conversationId: "legacy-conv2",
-		tags: {},
-		config: EMPTY,
-		inherited: { workspaceId: "ws-1", groups: [], blockedGroups: [] },
-	});
-	const s3 = createServices(repo);
-	await s3.ready();
-	await s3.conversations.ensureOwn("legacy-conv2", "ws-1");
-	const seeded = s3.conversations.own("legacy-conv2");
+	// 只有用户显式点「继承工作区配置」才会写入 own
+	await s2.conversations.inheritFromWorkspace("legacy-conv", "ws-1");
+	const seeded = s2.conversations.own("legacy-conv");
 	assert.equal(seeded.expression, "前端");
 	assert.equal(seeded.sourceWorkspaceId, "ws-1");
+});
+
+test("出生播种 seedOwnOnBirth：只在 own 为空时继承一次，绝不覆盖已有配置", async () => {
+	const { services: s } = await boot();
+	await seedWorkspace(s);
+
+	// 新出生且未配置 → 播种
+	assert.equal(await s.conversations.seedOwnOnBirth("newborn", "ws-1"), true);
+	assert.equal(s.conversations.own("newborn").expression, "前端");
+
+	// 工作区改了，再播一次不会覆盖（幂等）
+	await s.workspaces.setExpression("ws-1", "后端");
+	assert.equal(await s.conversations.seedOwnOnBirth("newborn", "ws-1"), false);
+	assert.equal(s.conversations.own("newborn").expression, "前端", "已有配置绝不被覆盖");
+
+	// 工作区不存在 → 不写（留 null = 全部技能，不会把对话钉死）
+	assert.equal(await s.conversations.seedOwnOnBirth("no-ws", "ws-missing"), false);
+	assert.equal(s.conversations.get("no-ws")?.own ?? null, null);
 });
 
 test("own 快照落盘并跨实例恢复", async () => {
@@ -336,21 +352,23 @@ test("API：对话版双列界面全链路（继承 → 改条件 → 手动 →
 	};
 
 	try {
-		// 1. 首次打开历史对话：用宿主解析到的工作区播种快照（默认继承一次）
+		// 1. 首次打开历史对话：**纯读，不播种**（2026-10-31 起）
+		//    未配置过 → configured=false → 空条件 → 掌握全部技能
 		let d = await call("/conversations/config", { conversationId: "sess-1" });
 		assert.equal(d.ok, true);
-		assert.equal(d.workspaceId, "ws-1", "会话应解析到所属工作区");
-		assert.equal(d.expression, "前端", "默认继承工作区条件");
-		assert.deepEqual(d.manualSkills, ["gamma"]);
-		assert.deepEqual(d.disabledSkills, ["beta"]);
-		// 右列 = 命中 alpha ∪ 手动 gamma − 禁用（beta 不在命中集里）
-		assert.deepEqual(d.view.visible, ["alpha", "gamma"]);
+		assert.equal(d.workspaceId, "ws-1", "会话仍解析到所属工作区（供继承按钮用）");
+		assert.equal(d.configured, false, "打开不等于配置");
+		assert.equal(d.expression, "", "不自动继承工作区条件");
+		assert.deepEqual(d.manualSkills, []);
+		assert.deepEqual(d.disabledSkills, []);
+		// 空条件 → 全部技能（不筛）
+		assert.deepEqual(d.view.visible, UNIVERSE);
 		assert.deepEqual(d.universe, UNIVERSE);
 
-		// 2. 工作区之后改动，不会自动流入这个对话
+		// 2. 工作区改动，也不会流入这个未配置的对话
 		await s.workspaces.setExpression("ws-1", "后端");
 		d = await call("/conversations/config", { conversationId: "sess-1" });
-		assert.equal(d.expression, "前端", "已存在的对话不自动跟随工作区");
+		assert.equal(d.expression, "", "未配置过的对话不跟随工作区");
 
 		// 3. 点「继承工作区配置」→ 拉最新并整体覆盖
 		d = await call("/conversations/inherit", { conversationId: "sess-1" });
@@ -431,4 +449,54 @@ test("API：没有可继承的工作区时明确报错", async () => {
 	} finally {
 		await new Promise((r) => server.close(r));
 	}
+});
+// ── 标签实体的变更必须同步写回对话快照（2026-10-31 补） ─────────────────
+//
+// own 是「冻结的配置」，但标签的名称/存废是**全局**的。若不写回，冻结住的表达式
+// 会指向不存在的标签名，用户下次打开「tag 设置」就看到「标签不存在」且保存被拒。
+
+test("改标签名：所有对话快照里的表达式同步改写", async () => {
+	const { services: s } = await boot();
+	await seedWorkspace(s);
+	await s.conversations.create("conv-1", "ws-1"); // own.expression = "前端"
+	await s.conversations.inheritFromWorkspace("conv-2", "ws-1");
+
+	await s.tags.rename("t1", "前端改");
+
+	assert.equal(s.conversations.own("conv-1").expression, "前端改");
+	assert.equal(s.conversations.own("conv-2").expression, "前端改");
+	assert.equal(s.workspaces.get("ws-1").expression, "前端改");
+	// 改写后的表达式仍然合法（不再「标签不存在」）
+	const v = s.templates.validate(s.conversations.own("conv-1").expression, { allowEmpty: true });
+	assert.equal(v.ok, true);
+});
+
+test("全局删标签：对话快照里的 config 与表达式一并摘除该标签", async () => {
+	const { services: s } = await boot();
+	await seedWorkspace(s);
+	await s.conversations.create("conv-1", "ws-1");
+	assert.deepEqual(s.conversations.own("conv-1").config.orTags, ["t1"]);
+
+	await s.tags.globalDelete("t1");
+
+	const o = s.conversations.own("conv-1");
+	assert.deepEqual(o.config.orTags, [], "不留悬空 tagId（否则会屏蔽全部技能）");
+	assert.equal(o.expression, "");
+});
+
+test("installed_at：首次写入后永不覆盖（三种对话判定的基准）", async () => {
+	const { services: s, repo } = await boot();
+	assert.equal(s.meta.installedAt(), null);
+	const t1 = "2026-01-01T00:00:00.000Z";
+	await s.meta.ensureInstalledAt(t1);
+	assert.equal(s.meta.installedAt(), t1);
+
+	// 再次 ensure（模拟重启/升级）不得改写
+	await s.meta.ensureInstalledAt("2027-01-01T00:00:00.000Z");
+	assert.equal(s.meta.installedAt(), t1);
+
+	// 跨实例恢复
+	const s2 = createServices(repo);
+	await s2.ready();
+	assert.equal(s2.meta.installedAt(), t1);
 });

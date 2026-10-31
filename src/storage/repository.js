@@ -21,6 +21,8 @@
  * @property {() => Promise<Map<string, any>>} listConversations
  * @property {(rec: any) => Promise<void>} putConversation
  * @property {(conversationId: string) => Promise<void>} deleteConversation
+ * @property {() => Promise<Map<string, any>>} listSyncMeta
+ * @property {(rec: any) => Promise<void>} putSyncMeta
  */
 
 // ── In-memory implementation (unit tests) ───────────────────────────────────
@@ -52,6 +54,8 @@ export function createMemoryRepository() {
 		async listConversations() { return new Map(t("conversations")); },
 		async putConversation(rec) { t("conversations").set(rec.conversationId, structuredClone(rec)); },
 		async deleteConversation(id) { t("conversations").delete(id); },
+		async listSyncMeta() { return new Map(t("sync_meta")); },
+		async putSyncMeta(rec) { t("sync_meta").set(rec.key, structuredClone(rec)); },
 	};
 }
 
@@ -92,6 +96,8 @@ export function createDshRepository(domain) {
 		async listConversations() { return rows("conversations"); },
 		async putConversation(rec) { await tables.conversations.put(rec.conversationId, rec); },
 		async deleteConversation(id) { await tables.conversations.delete(id); },
+		async listSyncMeta() { return rows("sync_meta"); },
+		async putSyncMeta(rec) { await tables["sync_meta"].put(rec.key, rec); },
 	};
 }
 

@@ -45,6 +45,10 @@ function makeFetcher(log, opts = {}) {
 		ok: true,
 		conversationId: "sess-1",
 		workspaceId: state.sourceWorkspaceId,
+		// 该对话是否已有自己的配置快照（own）。false = 从未配置过。
+		configured: "configured" in opts ? opts.configured : true,
+		// 服务端只读体检：已冻结的表达式是否还引用了存在的标签
+		expressionIssue: opts.expressionIssue ?? { ok: true, message: null },
 		expression: state.expression,
 		config: state.expression === "" ? { orTags: [], andGroups: [] } : { orTags: ["t-a"], andGroups: [] },
 		manualSkills: state.manualSkills.slice(),
@@ -338,14 +342,40 @@ test("对话版左列显示继承来源与时间（让用户知道条件从哪�
 	assert.match(text, /改动不影响工作区/);
 });
 
-test("对话无条件且未继承时：明确说「未继承」而不是显示 ∅", async () => {
-	const { rt, box, slots } = await boot({ expression: "", sourceWorkspaceId: null, inheritedAt: null });
+test("对话无条件且从未配置时：说「尚未配置过」而不是显示 ∅", async () => {
+	const { rt, box, slots } = await boot({
+		expression: "", sourceWorkspaceId: null, inheritedAt: null, configured: false,
+	});
 	slots.helpers.manageSet({ open: true, conversationId: "sess-1" });
 	const tree = await rt.settle(slots["shell.overlay"].component, {}, 8, box);
 	const text = allText(tree);
 	assert.match(text, /无条件 — 该对话掌握全部技能/);
-	assert.match(text, /未继承任何工作区/);
+	// 2026-10-31：own 为 null 的语义是「从未配置过 = 空条件 = 掌握全部技能」，
+	// 不能说成「继承了 null 工作区」（那是旧口径的措辞，会误导成"继承坏了"）。
+	assert.match(text, /尚未配置过/);
 	assert.doesNotMatch(text, /∅/, "空条件不能显示成 ∅（与「掌握全部技能」矛盾）");
+});
+
+test("对话有独立配置但未继承时：说「该对话有独立配置」", async () => {
+	const { rt, box, slots } = await boot({
+		expression: "A", sourceWorkspaceId: null, inheritedAt: null, configured: true,
+	});
+	slots.helpers.manageSet({ open: true, conversationId: "sess-1" });
+	const tree = await rt.settle(slots["shell.overlay"].component, {}, 8, box);
+	assert.match(allText(tree), /该对话有独立配置（未继承工作区）/);
+});
+
+test("已冻结的表达式引用了已删除标签时：界面给出只读提示", async () => {
+	const { rt, box, slots } = await boot({
+		expression: "已删除的标签",
+		configured: true,
+		expressionIssue: { ok: false, message: "标签不存在: '已删除的标签'" },
+	});
+	slots.helpers.manageSet({ open: true, conversationId: "sess-1" });
+	const tree = await rt.settle(slots["shell.overlay"].component, {}, 8, box);
+	const text = allText(tree);
+	assert.match(text, /引用了已不存在的标签/, "必须提示，否则用户不知道该条件已失效");
+	assert.match(text, /标签不存在/);
 });
 
 // ── 继承按钮 ───────────────────────────────────────────────────────────────
