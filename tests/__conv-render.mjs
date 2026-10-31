@@ -333,12 +333,19 @@ test("对话版双列：打的是对话端点，左列有「继承工作区配�
 });
 
 test("对话版左列显示继承来源与时间（让用户知道条件从哪来）", async () => {
-	const { rt, box, slots } = await boot({ expression: "A", sourceWorkspaceId: "ws-9", inheritedAt: "2026-10-20T12:34:56.000Z" });
+	// 服务端存的是 UTC（结尾 Z）。界面必须按**本地时区**渲染 —— 旧实现直接
+	// slice(0, 19) 截字符串，把 Z 连同时区信息一起切掉，东八区整整偏 8 小时
+	// （"凌晨 2 点"其实是上午 10 点）。这里断言本地时间，而不是 UTC 原样。
+	const ISO = "2026-10-20T12:34:56.000Z";
+	const { rt, box, slots } = await boot({ expression: "A", sourceWorkspaceId: "ws-9", inheritedAt: ISO });
 	slots.helpers.manageSet({ open: true, conversationId: "sess-1" });
 	const tree = await rt.settle(slots["shell.overlay"].component, {}, 8, box);
 	const text = allText(tree);
 	assert.match(text, /继承来源: ws-9/);
-	assert.match(text, /2026-10-20 12:34:56/, "时间应格式化到秒");
+	const d = new Date(ISO);
+	const p = (n) => String(n).padStart(2, "0");
+	const expected = `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
+	assert.ok(text.includes(expected), `应按本地时区显示 ${expected}，实际文本里没有`);
 	assert.match(text, /改动不影响工作区/);
 });
 
