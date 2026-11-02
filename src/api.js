@@ -92,8 +92,22 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 				listed = [];
 			}
 		}
+		// 2026-11-02（缺陷 1+2）：catalog 必须带两样以前被丢掉的元数据，
+		// 否则前端无法区分「标签可见」与「模型可见」——
+		//   invocation: 宿主/扫描解析出的 {modelInvocable, userInvocable}
+		//   registered: 是否来自宿主 skills registry（自扫描兜底的 = false）
 		const catalog = listed
-			.map((s) => (typeof s === "string" ? { name: s, path: null, source: null } : { name: s?.name, path: s?.path ?? null, source: s?.source ?? null }))
+			.map((s) => (typeof s === "string"
+				? { name: s, path: null, source: null, invocation: null, registered: false }
+				: {
+					name: s?.name,
+					path: s?.path ?? null,
+					source: s?.source ?? null,
+					invocation: s?.invocation ?? null,
+					// 没带 registered 的调用方（测试面 / 老版本 discoverer）按"宿主已注册"处理，
+					// 否则会把整个右列误判成未注册。
+					registered: s?.registered !== false,
+				}))
 			.filter((s) => Boolean(s.name));
 		const universe = catalog.map((s) => s.name);
 		const links = [...services._caches.skillLinks.values()];

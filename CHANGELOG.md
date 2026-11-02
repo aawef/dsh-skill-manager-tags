@@ -1,5 +1,94 @@
 # CHANGELOG
 
+## 0.1.14 — 2026-11-02 界面区分「命中技能」与「模型可见技能」
+
+### 需求
+
+用户报告（workspaceId 4e015e02，会话 session-2d43e31c-b54a-427e-bdd1-10d0c33b7da4）：
+
+> 你能看到的 skill 和我在这个插件里看到的 skill 数量不一致
+
+界面显示 `技能 (64)`，但模型这一轮实际只拿到 48 个。两侧都没报错、都"正确"，
+差别在于它们统计的**不是同一个集合**。
+
+### 根因（两处独立的偏差）
+
+**偏差一：可见性判定只看了标签，没看 invocation。**
+
+`workspaceSkillView` 只做「表达式命中 − 手动禁用」的集合运算，完全不读 SKILL.md 的
+frontmatter。但宿主下发技能时会按 `disable-model-invocation: true` 把技能从模型侧摘掉、
+只保留斜杠命令入口。这批技能在插件里算"可见"，在模型那里根本不存在。
+
+**偏差二：发现链路是「宿主快照 ∪ 自扫描兜底」，比宿主宽。**
+
+`createSkillDiscoverer` 先用宿主 `skills` 服务给的快照，再扫本地技能根把宿主没列的
+补进来 —— 兜底本身是对的（0.1.7 修过"插件看到的比宿主少"），但它同时把**宿主根本没注册**
+的技能也算成了可下发技能。这两类偏差方向相反，混在同一个数字里互相抵消，所以看数字查不出来。
+
+### 实现
+
+**扫描器**（`src/skill-scan.js`）：
+
+- 新增导出 `invocationOf(fm)` → `{modelInvocable, userInvocable}`，解析
+  `disable-model-invocation` / `user-invocable`，布尔写法认 `true/1/yes/on` 与
+  `false/0/no/off`，口径对齐宿主 `dsh-skill-filesystem` 的 `parseInvocationPolicy`；
+- `pushSkill()` 的输出带上 `invocation`。
+
+**领域层**（`src/domain/workspace.js`）：
+
+- 新增导出 `splitModelVisible(visible, catalog)` → `{modelVisible, userOnly, unregistered}`：
+  - catalog 里 `registered === false` → 进 `unregistered`；
+  - `invocation.modelInvocable === false` → 进 `userOnly`，带 `reason: 'disable-model-invocation'`；
+  - catalog 里完全没出现的名字 → **算 modelVisible**，不做越界判断（没证据就不扣）。
+- `workspaceDeniedSkills` 的分母**没动**：deny-shadow 仍以表达式命中集为准，
+  否则改 invocation 口径会连带改变"哪些技能被影子拦住"的判定。
+
+**服务层**（`src/service.js`）：`view()` 与 `ownView()` 在返回的 view 上叠加
+`splitModelVisible(...)` 的三个字段。
+
+**HTTP 层**（`src/api.js`）：`contextForConfig` 的 catalog 映射多带
+`invocation` 与 `registered: s?.registered !== false`（缺省按已注册，避免
+老 discoverer 或测试面把整列误判成未注册）。
+
+**发现器**（`lib/index.js`）：`put(s, registered)` 两参；宿主快照 `put(s, true)`，
+自扫描补缺 `put(s, false)`；`registered` 一旦为 true 不会被后到的扫描覆盖
+（`registered || prev?.registered === true`）。`invocation` 优先用宿主给的，缺了才用扫描的。
+
+**界面**（`lib/client.js`）：
+
+- 右列标题 `技能 (N)` → `技能 (N) · 模型可见 M`；
+- 两数不等时标题下加两行橙色说明，分别列出「X 个只能 /名字 手动调用」与「Y 个宿主没注册」；
+- 对应行加 `仅手动`（紫）/ `未注册`（橙）徽标，技能名置灰。
+
+### 为什么"两数不等"也要显示全部
+
+直接按模型可见集过滤会让那 16 个 `disable-model-invocation` 技能从界面消失 ——
+它们是**故意**只给斜杠命令的，用户仍需要看到、仍需要能打标签改判。所以保留全量 +
+差额说明，而不是改成分母。`unregistered` 那批同理：它们是宿主侧装配问题，
+藏在插件里只会让下次排查更难。
+
+### 测试
+
+- `tests/skill-scan.test.mjs`（新文件，4 项）：`invocationOf` 的默认值、`disable-model-invocation`
+  的各种布尔写法、`user-invocable` 独立解析、扫描器把 invocation 带进输出。
+- `tests/workspace.test.mjs` +6：`splitModelVisible` 的五个分支（全可见 / dmi / 未注册 /
+  dmi 优先于未注册 / catalog 缺项不扣）+ 1 条 API 级端到端（visible 4、modelVisible 2、
+  userOnly 命中 beta、unregistered 命中 gamma）。
+- `tests/runtime.test.mjs` +2：自扫描补进来的技能 `registered=false`；同名时以宿主为准不降级。
+- 全量 `node --test "tests/*.test.mjs"`：178 项 / 通过 173。5 项 `reveal` 系列失败是本机
+  既存问题（`EPERM: mkdtemp` 在沙箱临时目录），`git stash` 后 baseline 同样是这类失败，与本次改动无关。
+
+### 真实数据核对
+
+工作区 4e015e02 用活服务返回的 visible 与真实 SKILL.md frontmatter 重算：
+
+```
+visible       64
+modelVisible  48   <- 与本轮模型 catalog 的 48 个逐个比对，双向都为空差
+userOnly      16
+unregistered   0
+```
+
 ## 0.1.13 — 2026-10-31 工作区配置一键下发到该工作区下所有对话
 
 ### 需求

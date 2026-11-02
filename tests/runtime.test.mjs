@@ -440,6 +440,38 @@ test("apply() 在最小 cordis 面上不抛（workspaceRegistry 未注入 / 无 
 // ——关键在 `scope`：宿主按 scope 决定合并哪些层。
 const { createSkillDiscoverer } = await import("../lib/index.js");
 
+// 2026-11-02（缺陷 1）：扫描结果必须带上 invocation —— 宿主 isModelInvocable 的输入
+// 就是它。不带的话，插件会把「只能 /name 手动调用」的技能算进"下发给模型"。
+test("createSkillDiscoverer：自扫描补进来的技能要带上 invocation 与 registered=false", async () => {
+	const discover = createSkillDiscoverer({
+		hostRegistry: null,
+		rootsScan: () => [
+			{ name: "auto-ok", registered: false, invocation: { modelInvocable: true, userInvocable: true } },
+			{ name: "manual-only", registered: false, invocation: { modelInvocable: false, userInvocable: true } },
+		],
+	});
+	const out = await discover("/w");
+	const byName = Object.fromEntries(out.map((s) => [s.name, s]));
+	assert.equal(byName["manual-only"].invocation.modelInvocable, false, "disable-model-invocation 必须透传");
+	assert.equal(byName["manual-only"].registered, false, "自扫描兜底 = 宿主未注册");
+});
+
+test("createSkillDiscoverer：宿主快照里同名条目优先，invocation 与 registered 都以宿主为准", async () => {
+	const hostRegistry = {
+		async snapshot() {
+			return { skills: [{ name: "dup", registered: true, invocation: { modelInvocable: false, userInvocable: true } }] };
+		},
+	};
+	const discover = createSkillDiscoverer({
+		hostRegistry,
+		rootsScan: () => [{ name: "dup", registered: false, invocation: { modelInvocable: true, userInvocable: true } }],
+	});
+	const out = await discover("/w");
+	assert.equal(out.length, 1);
+	assert.equal(out[0].registered, true, "宿主那条才是权威");
+	assert.equal(out[0].invocation.modelInvocable, false);
+});
+
 test("createSkillDiscoverer：宿主注册表的技能优先，插件 provider 贡献的技能必须出现", async () => {
 	const hostRegistry = {
 		async snapshot(options) {

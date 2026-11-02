@@ -19,7 +19,7 @@ import {
 	detachFromWorkspace,
 } from "./domain/sync.js";
 import { candidatesFor } from "./domain/match.js";
-import { workspaceSkillView, workspaceDeniedSkills } from "./domain/workspace.js";
+import { workspaceSkillView, workspaceDeniedSkills, splitModelVisible } from "./domain/workspace.js";
 import {
 	validateExpression, evaluateDnf, configToExpression, renameTagInExpression,
 	removeTagFromExpression,
@@ -565,13 +565,16 @@ export function createServices(repo, opts = {}) {
 		view(workspaceId, ctx = {}) {
 			const ws = workspaces.get(workspaceId);
 			const config = ws?.config ?? emptyTagConfig();
-			return workspaceSkillView({
+			const view = workspaceSkillView({
 				config,
 				manualSkills: ws?.manualSkills ?? [],
 				disabledSkills: ws?.disabledSkills ?? [],
 				candidates: ctx.candidates ?? [],
 				universe: ctx.universe ?? [],
 			});
+			// 口径拆分：visible 是「标签选出来的」，modelVisible 是「模型真能看到的」。
+			// 两者不等时（disable-model-invocation / 宿主不认识的技能），前端必须分开显示。
+			return { ...view, ...splitModelVisible(view.visible, ctx.catalog ?? []) };
 		},
 		/** 该工作区应被屏蔽的技能名集合（供 deny-shadow 使用） */
 		denied(workspaceId, ctx = {}) {
@@ -847,13 +850,14 @@ export function createServices(repo, opts = {}) {
 		/** 对话页右列数据源（与工作区共用同一份领域实现）。 */
 		ownView(conversationId, ctx = {}) {
 			const o = this.own(conversationId) ?? emptyOwnConfig();
-			return workspaceSkillView({
+			const view = workspaceSkillView({
 				config: o.config,
 				manualSkills: o.manualSkills,
 				disabledSkills: o.disabledSkills,
 				candidates: ctx.candidates ?? [],
 				universe: ctx.universe ?? [],
 			});
+			return { ...view, ...splitModelVisible(view.visible, ctx.catalog ?? []) };
 		},
 		/** 该对话应被 deny-shadow 的技能名集合。 */
 		ownDenied(conversationId, ctx = {}) {

@@ -8,7 +8,7 @@ import assert from "node:assert/strict";
 
 import {
 	normalizeSkillIds, hasFilter, activeTagsOf, workspaceSkillView,
-	workspaceDeniedSkills, normalizeWorkspacePath,
+	workspaceDeniedSkills, normalizeWorkspacePath, splitModelVisible,
 } from "../src/domain/workspace.js";
 import { createServices } from "../src/service.js";
 import { createMemoryRepository } from "../src/storage/repository.js";
@@ -97,6 +97,51 @@ test("denied：空条件时只屏蔽被禁用的技能", () => {
 		config: EMPTY, manualSkills: [], disabledSkills: ["s2"], candidates: [], universe: ["s1", "s2"],
 	});
 	assert.deepEqual([...denied], ["s2"]);
+});
+
+// ── 两套口径：标签可见 vs 模型可见（2026-11-02 用户报的 64 vs 48）───────────
+
+test("splitModelVisible：visible 全缺省时原样进 modelVisible", () => {
+	const out = splitModelVisible(["a", "b"], [{ name: "a", registered: true }, { name: "b", registered: true }]);
+	assert.deepEqual(out.modelVisible, ["a", "b"]);
+	assert.deepEqual(out.userOnly, []);
+	assert.deepEqual(out.unregistered, []);
+});
+
+test("splitModelVisible：disable-model-invocation 的技能只算「仅手动」，不进模型可见", () => {
+	const out = splitModelVisible(["a", "b"], [
+		{ name: "a", registered: true, invocation: { modelInvocable: true, userInvocable: true } },
+		{ name: "b", registered: true, invocation: { modelInvocable: false, userInvocable: true } },
+	]);
+	assert.deepEqual(out.modelVisible, ["a"]);
+	assert.deepEqual(out.userOnly, [{ name: "b", reason: "disable-model-invocation" }]);
+});
+
+test("splitModelVisible：宿主未注册（自扫描兜底）的技能单独归类，不算模型可见", () => {
+	const out = splitModelVisible(["a", "b"], [
+		{ name: "a", registered: true },
+		{ name: "b", registered: false },
+	]);
+	assert.deepEqual(out.modelVisible, ["a"]);
+	assert.deepEqual(out.unregistered, ["b"]);
+	assert.deepEqual(out.userOnly, []);
+});
+
+test("splitModelVisible：catalog 里完全没有的名字按模型可见处理（不是本插件的判断范围）", () => {
+	const out = splitModelVisible(["ghost"], []);
+	assert.deepEqual(out.modelVisible, ["ghost"]);
+});
+
+test("splitModelVisible：universe 口径不变 —— deny-shadow 仍用 visible 算，不被本函数影响", () => {
+	const p = {
+		config: EMPTY, manualSkills: [], disabledSkills: [],
+		candidates: [], universe: ["a", "b"],
+	};
+	const view = workspaceSkillView(p);
+	const split = splitModelVisible(view.visible, [{ name: "b", registered: true, invocation: { modelInvocable: false } }]);
+	assert.deepEqual(view.visible, ["a", "b"], "标签口径仍是两条");
+	assert.deepEqual(split.modelVisible, ["a"], "模型口径只有一条");
+	assert.deepEqual([...workspaceDeniedSkills(p)].sort(), [], "屏蔽口径不受模型可见性影响");
 });
 
 test("normalizeWorkspacePath 统一分隔符/大小写/尾部分隔符", () => {
@@ -330,6 +375,48 @@ test("API：右列数据 + 添加/禁用/恢复/移除 全链路", async () => {
 		assert.equal(d.workspace.expression, "");
 		d = await call("/workspaces/skills", { workspaceId: "ws-1" });
 		assert.deepEqual(d.view.visible, ["alpha", "beta", "gamma", "delta"]);
+	} finally {
+		await new Promise((r) => server.close(r));
+	}
+});
+
+// 2026-11-02（缺陷 1+2）：/workspaces/skills 必须把 invocation / registered 透传，
+// 并给出 view.modelVisible / userOnly / unregistered —— 这正是用户问的
+// "插件说 N 条、模型实际 M 条" 的那个差额的直接来源。
+test("API：右列同时给出「标签可见」与「模型可见」两套口径", async () => {
+	const s = await boot();
+	const listSkills = () => [
+		{ name: "alpha", path: "/a/SKILL.md", source: "bundled", registered: true, invocation: { modelInvocable: true, userInvocable: true } },
+		{ name: "beta", path: "/b/SKILL.md", source: "bundled", registered: true, invocation: { modelInvocable: false, userInvocable: true } },
+		{ name: "gamma", path: "/g/SKILL.md", source: "C:\\home\\.dsh\\skills", registered: false, invocation: { modelInvocable: true, userInvocable: true } },
+		{ name: "delta", path: "/d/SKILL.md", source: "bundled", registered: true, invocation: { modelInvocable: true, userInvocable: true } },
+	];
+	const handler = createApiHandler(s, null, listSkills);
+	const server = (await import("node:http")).createServer((req, res) => void handler(req, res));
+	await new Promise((r) => server.listen(0, r));
+	const port = server.address().port;
+	const call = async (path, body) => {
+		const r = await fetch(`http://127.0.0.1:${port}/skill-tag/api${path}`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body ?? {}),
+		});
+		return { status: r.status, ...(await r.json()) };
+	};
+	try {
+		const d = await call("/workspaces/skills", { workspaceId: "ws-1" });
+		assert.equal(d.ok, true);
+		assert.deepEqual(d.view.visible, ["alpha", "beta", "gamma", "delta"], "标签口径仍是四条");
+		assert.deepEqual(d.view.modelVisible, ["alpha", "delta"], "模型口径只有两条（beta 仅手动、gamma 未注册）");
+		assert.deepEqual(d.view.userOnly.map((r) => r.name), ["beta"]);
+		assert.deepEqual(d.view.userOnly[0].reason, "disable-model-invocation");
+		assert.deepEqual(d.view.unregistered, ["gamma"]);
+		// catalog 本身也要带上元数据，前端 📁/解释文案都靠它
+		const beta = d.catalog.find((x) => x.name === "beta");
+		assert.equal(beta.invocation.modelInvocable, false);
+		assert.equal(beta.registered, true);
+		const gamma = d.catalog.find((x) => x.name === "gamma");
+		assert.equal(gamma.registered, false);
 	} finally {
 		await new Promise((r) => server.close(r));
 	}

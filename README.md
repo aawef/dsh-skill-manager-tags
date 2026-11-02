@@ -67,9 +67,13 @@ office * plugin       # 只要 office 包带来的、且是插件相关
 <img src="https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@main/images/workspace-filter.png" width="900" alt="工作区管理标签双列界面">
 
 左列是标签条件，下面实时显示**解析结果**和状态「有条件筛选（严格子集）」；
-右列 `技能 (54)` 就是该工作区下发给模型的全部技能，每行可以「查看 tag」「禁用」，
-📁 直接打开技能所在文件夹。列表顶部的**搜索框**只过滤显示（标题会变成 `技能 (匹配/总数)`），
-不改动实际下发的技能集合。底部还能「+ 精细化添加技能」「查看被禁用的技能」。
+右列标题是 `技能 (54) · 模型可见 48`：前一个数是命中表达式的**全部技能**，
+后一个数是其中**真正下发给模型**的那些。两者不等时标题下方会多出两行橙色说明，
+列出差额的去向——`X 个只能 /名字 手动调用`（SKILL.md 里写了 `disable-model-invocation: true`）
+和 `Y 个宿主没注册`（扫描到了但宿主没装），对应行也会带 `仅手动` / `未注册` 徽标并置灰。
+每行都可以「查看 tag」「禁用」，📁 直接打开技能所在文件夹。列表顶部的**搜索框**只过滤显示
+（标题会变成 `技能 (匹配/总数)`），不改动实际下发的技能集合。底部还能「+ 精细化添加技能」
+「查看被禁用的技能」。
 
 ### 图 6 · 对话「管理标签（对话）」：可以有自己的一份
 
@@ -177,7 +181,8 @@ node tools/auto-tag.mjs ... --domain ./my-domain-map.json --apply # 连领域轴
 - **对话**：会话行的「…」菜单（图 1），或聊天框左下角「+」→「管理对话标签」（图 2）
 
 左列写标签条件表达式，右列是命中结果（可手动添加 / 禁用 / 恢复）。改完立刻生效：
-该对话下发给模型的技能列表就是右列那一份。两张双列界面见「图 5」「图 6」。
+该对话下发给模型的技能列表就是右列里**模型可见**的那一份（标题的第二段数字）。
+两张双列界面见「图 5」「图 6」。
 
 ### 3. 表达式语法
 
@@ -275,6 +280,7 @@ images/              README 用的界面截图（不进 npm 包）
 | [docs/对话管理标签.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/%E5%AF%B9%E8%AF%9D%E7%AE%A1%E7%90%86%E6%A0%87%E7%AD%BE.md) | 对话级配置与继承 |
 | [docs/技能发现与宿主对齐.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/%E6%8A%80%E8%83%BD%E5%8F%91%E7%8E%B0%E4%B8%8E%E5%AE%BF%E4%B8%BB%E5%AF%B9%E9%BD%90.md) | 为什么"插件看到的技能数"曾经少于宿主，以及怎么对齐 |
 | [docs/deny-shadow-覆盖率.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/deny-shadow-%E8%A6%86%E7%9B%96%E7%8E%87.md) | 为什么包带来的技能会**静默漏网**（`path` 为 null 的那批），以及宿主对影子候选的强校验、层/rank 语义 |
+| [docs/修复指南.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/%E4%BF%AE%E5%A4%8D%E6%8C%87%E5%8D%97.md) | **「打了标签技能却没出现」的排查手册**：三层判定树、transcript 逐帧解压取证、预设关闭默认技能根（A 层）、已知假阳性、升级回归清单 |
 | [docs/skill联系tag与打开文件夹.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/docs/skill%E8%81%94%E7%B3%BBtag%E4%B8%8E%E6%89%93%E5%BC%80%E6%96%87%E4%BB%B6%E5%A4%B9.md) | 两个方向编辑 + 📁 按钮 |
 | [CHANGELOG.md](https://github.com/aawef/dsh-skill-manager-tags/blob/main/CHANGELOG.md) | 按日期倒序的完整开发记录 |
 

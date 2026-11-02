@@ -84,8 +84,36 @@ function pushSkill(out, mdPath, root, disabled, fallbackName) {
 		description: fm?.description ?? "",
 		path: mdPath,
 		source: root,
+		invocation: invocationOf(fm),
 		...(disabled ? { disabled: true } : {}),
 	});
+}
+
+/**
+ * frontmatter → invocation 策略，与宿主 parseInvocationPolicy
+ * (dsh-skill-filesystem/lib/index.js:852-862) 同一口径：
+ *   disable-model-invocation: true  → modelInvocable = false
+ *   user-invocable: false           → userInvocable  = false
+ * 模型看不到、只能用 /name 手动调用的技能，必须在扫描结果里就带上这个标记，
+ * 否则插件会把它们算进「下发给模型的技能」（2026-11-02 的 64 vs 48）。
+ *
+ * @param {Record<string,string>|null} fm
+ * @returns {{modelInvocable:boolean, userInvocable:boolean}}
+ */
+export function invocationOf(fm) {
+	const disableModel = frontmatterFlag(fm, "disable-model-invocation");
+	const userInvocable = frontmatterFlag(fm, "user-invocable");
+	return { modelInvocable: disableModel !== true, userInvocable: userInvocable !== false };
+}
+
+/** frontmatter 布尔（宿主认 true/1/yes/on 与 false/0/no/off 两种写法） */
+function frontmatterFlag(fm, key) {
+	const raw = fm?.[key];
+	if (raw === undefined || raw === null || raw === "") return undefined;
+	const v = String(raw).trim().toLowerCase();
+	if (v === "true" || v === "yes" || v === "on" || v === "1") return true;
+	if (v === "false" || v === "no" || v === "off" || v === "0") return false;
+	return undefined;
 }
 
 function isFile(p) {

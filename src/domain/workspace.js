@@ -84,6 +84,46 @@ export function workspaceSkillView({ config, manualSkills, disabledSkills, candi
 }
 
 /**
+ * 把「标签选出的可见集合」再按**宿主的下发口径**切一刀。
+ *
+ * 背景（2026-11-02 用户报告的 64 vs 48）：右列长期只有一层「标签过滤」，
+ * 而模型侧拿到的是 `snapshot().skills.filter(isModelInvocable)` —— 两道闸：
+ *   ​① frontmatter 的 `disable-model-invocation: true`（只能 `/name` 手动调用）
+ *   ​② 宿主根本不认识的名字（插件自扫描补进来的，宿主 registry 里没有）
+ * 于是「右列 N 条」永远大于「模型实际 N 条」。这里把口径拆开，不再让前端
+ * 把两者混成一个数字。
+ *
+ * 注意：这**只影响展示口径**。deny-shadow 的分母仍是 world universe − visible，
+ * 不能拿 modelVisible 去算，否则那些只能手动调用的技能会重新变回可见。
+ *
+ * @param {string[]} visible 标签口径下的可见技能名
+ * @param {Array<{name:string, invocation?:{modelInvocable?:boolean}, registered?:boolean}>} [catalog]
+ *        技能目录（宿主快照 ∪ 自扫描兜底的合并结果）
+ * @returns {{modelVisible:string[], userOnly:{name:string, reason:string}[], unregistered:string[]}}
+ */
+export function splitModelVisible(visible, catalog = []) {
+	const byName = new Map();
+	for (const s of catalog ?? []) {
+		const name = typeof s === "string" ? s : s?.name;
+		if (name) byName.set(name, typeof s === "string" ? { name } : s);
+	}
+	const modelVisible = [];
+	const userOnly = [];
+	const unregistered = [];
+	for (const name of normalizeSkillIds(visible)) {
+		const entry = byName.get(name);
+		// 自扫描兜底补进来的名字：宿主 registry 里没有 → 模型侧根本不存在
+		if (entry && entry.registered === false) { unregistered.push(name); continue; }
+		if (entry?.invocation?.modelInvocable === false) {
+			userOnly.push({ name, reason: "disable-model-invocation" });
+			continue;
+		}
+		modelVisible.push(name);
+	}
+	return { modelVisible, userOnly, unregistered };
+}
+
+/**
  * 该工作区应被 deny-shadow（真正屏蔽）的技能名集合。
  * denied = universe − visible，再并上 disabled（禁用的名字即使不在 universe 里也要屏蔽）。
  *
