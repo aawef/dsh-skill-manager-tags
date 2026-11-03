@@ -1,5 +1,87 @@
 # CHANGELOG
 
+## 0.1.15 — 2026-11-03 技能注册状态区分「不可判定」与「未注册」
+
+### 需求
+
+GitHub issue #1（用户报告）：同一个技能在不同对话里时而「未注册」时而「已注册」。
+
+- 带 live agent 的会话：116 条技能全部 `registered: true`；
+- 历史会话或空 `conversationId`：固定 44 条 `registered: false`，界面断言
+  「本机有、但宿主没注册，模型侧根本不存在」。
+
+实际上那些技能宿主注册得好好的 —— 只是这一次查询没拿到视角。
+
+### 根因
+
+`createSkillDiscoverer` 把 `conversationId` 解析成宿主 agent，解析成功才把
+`scope` 传给 `hostRegistry.snapshot()`；解析失败时**静默省略** `scope`，
+宿主于是只收集 `layers.global`。覆盖用户级技能根（`~/.dsh/skills`、
+`~/.agents/skills`）的 provider 行不在 global 层，那两个根整段从快照里消失，
+发现器退回纯文件系统自扫描，把这些名字全部标成 `registered: false`。
+44 == 43 + 1 精确吻合。
+
+即：**「宿主没注册」与「这次没问到」被压成了同一个布尔值。**
+
+### 实现
+
+**领域层**（`src/domain/workspace.js`）：
+
+- `splitModelVisible(visible, catalog, options)` 新增第四类 `undeterminable`。
+  `options.registryUnavailable === true` 时**只有"宿主没返回"的条目**降级为不可判定；
+  宿主这一趟明确返回过的（`registered: true`）照常判定 —— 视角不全只让
+  「没返回」不可信，不能让已知的事实一起变成未知，否则历史会话的
+  「模型可见 N」会直接掉到 0（一审复核后修正）；
+- `registered` 允许 `null`（未知）：`null` 优先于「仅手动」判定 —— 连注册都
+  没确认，谈不上 disable-model-invocation；
+- 新增 `attachView` / `viewIsComplete` / `mergeRegistered` / `VIEW_COMPLETE`。
+  「这一趟视角可不可信」用 **Symbol 挂在数组上**（非枚举），因为普通属性会被
+  `[...out]` / JSON 序列化丢掉；
+
+**发现器**（`lib/index.js`）：
+
+- `snapshotSkills` 记下 `scoped && complete`（有 scope **且** 宿主没说自己没收全）；
+- 自扫描补进来的名字：视角完整 → `registered: false`（真·未注册），
+  视角不完整 → `registered: null`（不知道）；
+- 返回值带 `VIEW_COMPLETE` 记号；
+- 边界：宿主压根没装 skills 服务（`hostRegistry` 为 null）时仍按
+  `registered: false` 处理 —— 那时"谁都没注册"是字面事实，保持旧口径。
+
+**API**（`src/api.js`）：catalog 三态透传统一走 `coerceRegistered()`
+（`null` 不被压成 `true`/`false`，缺省 `undefined` 按 `true`），
+`contextForConfig` 多返回 `registryUnavailable`。**另一个出口一起堵上**：
+`/skills/purge-stale` 在视角不完整时直接 409 `INCOMPLETE_VIEW`，否则 live 集合
+偏小、stale 偏大，「清理失效关联」会误删仍然有效的关联。
+
+**服务层**（`src/service.js`）：`view` / `ownView` 把 `registryUnavailable`
+送进 `splitModelVisible`。
+
+**界面**（`lib/client.js`）：
+
+- 差额说明三种状态各说各话：新增「本次未取到宿主快照，暂不可判定（不代表没注册）」，
+  对话入口再加一句「该会话未运行，以下为全局视角」；
+- 逐行徽标「暂不可判定」（灰色虚线框）与「未注册」（橙色实线框）分开；
+- 不可判定的技能**不置灰**（不知道该不该灰，就不灰）；
+- 「模型可见 N」这个分母不含不可判定项。
+
+### 取舍说明
+
+有 live agent 时也不等于"永远能判定"：宿主自己回 `complete: false`（它承认这趟
+没收全）时同样降级为不可判定。这条分支以前不存在（旧代码不看 `complete`），属于
+新引入的行为面，但方向是"宁可说不知道，也不断言没有"。
+
+### 测试
+
+- `tests/workspace.test.mjs`：三态切分、`null` 优先级、视角不全时已知事实不被吞、
+  API 层 `registryUnavailable`；
+- `tests/runtime.test.mjs`：无 live agent → `registered: null` + `viewIsComplete === false`；
+  有 live agent（宿主返回完整快照）→ 自扫描补进来的仍是 `false`（回归底线）；
+- `tests/conversation.test.mjs`：视角不完整时 `purge-stale` 返回 `INCOMPLETE_VIEW` 且不动数据；
+- `tests/__conv-render.mjs`：对话版与工作区版两种措辞分别渲染，且「暂不可判定」场景下
+  不出现「未注册」「模型侧根本不存在」。
+
+全量：259 项全绿（`node --test "tests/*.test.mjs" "tests/*.mjs"`）。
+
 ## 0.1.14 — 2026-11-02 界面区分「命中技能」与「模型可见技能」
 
 ### 需求

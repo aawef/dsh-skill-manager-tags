@@ -6,8 +6,28 @@
 // should not 404 on POST-only clients either way).
 
 import { candidatesFor } from "./domain/match.js";
-import { activeTagsOf } from "./domain/workspace.js";
+import { activeTagsOf, viewIsComplete } from "./domain/workspace.js";
 import { revealInExplorer } from "./reveal.js";
+
+/**
+ * 把 registered 归一成三态（2026-11-03 #1）。
+ *
+ *   true  = 宿主确认注册了
+ *   false = 宿主确认没注册（只有自扫描看得见）
+ *   null  = 这趟没问到，状态未知
+ *
+ * 缺省（undefined）按 **true** 处理：没带这个字段的调用方（测试面 / 老版本
+ * discoverer / 宿主快照里的裸名字）说明它不掌握注册信息，不能因此把整个右列
+ * 误判成「宿主未注册」。这条缺省口径以前散在调用点的注释里，收进函数更安全。
+ *
+ * @param {boolean|null|undefined} value
+ * @returns {boolean|null}
+ */
+function coerceRegistered(value) {
+	if (value === false) return false;
+	if (value === null) return null;
+	return true;
+}
 
 /** 对外暴露的工作区形状（前端双列界面直接消费） */
 function wsShape(ws) {
@@ -92,6 +112,9 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 				listed = [];
 			}
 		}
+		// 2026-11-03（#1）：这一趟宿主视角可不可信，决定 registered 能不能被当成
+		// "未注册"来读。发现器用 Symbol 挂在数组上（不进 JSON），listSkills 就是它。
+		const registryUnavailable = !viewIsComplete(listed);
 		// 2026-11-02（缺陷 1+2）：catalog 必须带两样以前被丢掉的元数据，
 		// 否则前端无法区分「标签可见」与「模型可见」——
 		//   invocation: 宿主/扫描解析出的 {modelInvocable, userInvocable}
@@ -104,9 +127,8 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 					path: s?.path ?? null,
 					source: s?.source ?? null,
 					invocation: s?.invocation ?? null,
-					// 没带 registered 的调用方（测试面 / 老版本 discoverer）按"宿主已注册"处理，
-					// 否则会把整个右列误判成未注册。
-					registered: s?.registered !== false,
+					// 三态透传，归一规则见 coerceRegistered。
+					registered: coerceRegistered(s?.registered),
 				}))
 			.filter((s) => Boolean(s.name));
 		const universe = catalog.map((s) => s.name);
@@ -116,8 +138,9 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 			config: config ?? { orTags: [], andGroups: [] },
 			active: activeTagsOf(config),
 		});
-		// catalog 让前端能把「打开技能文件夹」按钮直接接到 path（不必再扫一遍）
-		return { universe, candidates, catalog };
+		// catalog 让前端能把「打开技能文件夹」按钮直接接到 path（不必再扫一遍）；
+		// registryUnavailable 让视图层知道这趟的 registered 能不能当"没有"读。
+		return { universe, candidates, catalog, registryUnavailable };
 	}
 	async function skillContext(ws) {
 		return contextForConfig(ws?.config, workspacePathOf(ws), {
@@ -281,15 +304,20 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 			// 为什么不在 GET 里顺手删：关联是用户手工打的标签，插件的临时缺席不等于
 			// 用户放弃它。默认只标记，删除必须显式触发。
 			if (path === "/skills/purge-stale" && method === "POST") {
-				const live = new Set(
-					((listSkills ? await listSkills(q("cwd") ?? undefined, {
-						conversationId: q("conversationId") ?? null,
-						workspaceId: q("workspaceId") ?? null,
-					}) : []) ?? []).map((s) => (typeof s === "string" ? s : s?.name)),
-				);
+				const discovered = (listSkills ? await listSkills(q("cwd") ?? undefined, {
+					conversationId: q("conversationId") ?? null,
+					workspaceId: q("workspaceId") ?? null,
+				}) : []) ?? [];
+				const live = new Set(discovered.map((s) => (typeof s === "string" ? s : s?.name)));
 				// 发现结果为空 = 宿主没就绪，此时"全是失效"是误判，绝不动数据。
 				if (live.size === 0) {
 					return json(res, 409, { ok: false, code: "NO_SKILLS", error: "当前发现到 0 个技能，拒绝清理（可能是宿主未就绪）" });
+				}
+				// 2026-11-03（#1 的第二个出口）：发现结果**不算全**时 live 偏小、stale 偏大，
+				// 删下去会误伤还活着的关联。同一根因：没拿到 agent scope 时宿主只给 global 层。
+				// 这里不下手，让用户换到能解析 scope 的入口再点。
+				if (!viewIsComplete(discovered)) {
+					return json(res, 409, { ok: false, code: "INCOMPLETE_VIEW", error: "这趟没有拿到完整的技能视角（可能该会话未运行），拒绝清理，以免误删仍然有效的关联" });
 				}
 				const wanted = Array.isArray(body?.skillIds) ? new Set(body.skillIds.map(String)) : null;
 				const removed = [];

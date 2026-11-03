@@ -39,7 +39,9 @@ function makeFetcher(log, opts = {}) {
 		const visible = [];
 		for (const n of matched) if (!state.disabledSkills.includes(n)) visible.push(n);
 		for (const n of state.manualSkills) if (!state.disabledSkills.includes(n) && !visible.includes(n)) visible.push(n);
-		return { hasFilter, matched, manual: state.manualSkills.slice(), disabled: state.disabledSkills.slice(), visible };
+		// 2026-11-03（#1）：允许测试注入 view 的三态拆分结果（modelVisible / userOnly /
+		// unregistered / undeterminable），默认保持旧口径（什么都没拆）。
+		return { hasFilter, matched, manual: state.manualSkills.slice(), disabled: state.disabledSkills.slice(), visible, ...(opts.viewExtras ?? {}) };
 	};
 	const payload = () => ({
 		ok: true,
@@ -72,7 +74,7 @@ function makeFetcher(log, opts = {}) {
 				config: { orTags: ["t-a"], andGroups: [] },
 				manualSkills: [], disabledSkills: [],
 				candidates: ["alpha"], universe: UNIVERSE,
-				view: { hasFilter: true, matched: ["alpha"], manual: [], disabled: [], visible: ["alpha"] },
+				view: { hasFilter: true, matched: ["alpha"], manual: [], disabled: [], visible: ["alpha"], ...(opts.workspaceViewExtras ?? {}) },
 			};
 		}
 		if (p === "/workspaces/expression") return { ok: true, workspace: {} };
@@ -520,3 +522,65 @@ test("没有 commandUi 服务时插件照常加载，不抛错", async () => {
 	assert.equal(slots.commandUi, undefined);
 });
 
+
+// ── 三种注册状态各说各话（2026-11-03 #1）────────────────────────────────────
+//
+// 历史会话（无 live agent）拿不到宿主视角时，技能注册状态是**未知**。界面
+// 只要还显示「未注册」或「模型侧根本不存在」，就是在撒谎。
+
+test("对话版：宿主视角不完整时逐行显示「暂不可判定」，且不出现「未注册」断言", async () => {
+	const { rt, box, slots } = await boot({
+		expression: "A",
+		viewExtras: {
+			modelVisible: [],
+			userOnly: [],
+			unregistered: [],
+			undeterminable: ["alpha"],
+		},
+	});
+	slots.helpers.manageSet({ open: true, conversationId: "sess-1" });
+	const tree = await rt.settle(slots["shell.overlay"].component, {}, 8, box);
+	const text = allText(tree);
+	assert.match(text, /暂不可判定/, "未知状态要显式说出来");
+	assert.match(text, /本次未取到宿主快照/, "差额说明要讲清为什么");
+	assert.match(text, /该会话未运行，以下为全局视角/, "对话入口要标注这是全局视角");
+	assert.doesNotMatch(text, /未注册/, "不可判定绝不能写成「未注册」");
+	assert.doesNotMatch(text, /模型侧根本不存在/, "不许断言模型侧根本不存在");
+});
+
+test("工作区版：宿主视角不完整时用「其中 N 个」口径，不提「该会话未运行」", async () => {
+	// 工作区页没有 conversationId，措辞不能照抄对话版（那里才能说"该会话未运行"）。
+	const { rt, box, slots } = await boot({
+		workspaceViewExtras: {
+			modelVisible: [],
+			userOnly: [],
+			unregistered: [],
+			undeterminable: ["alpha"],
+		},
+	});
+	slots.helpers.manageSet({ open: true, workspaceId: "ws-1" });
+	const tree = await rt.settle(slots["shell.overlay"].component, {}, 8, box);
+	const text = allText(tree);
+	assert.match(text, /其中 1 个本次未取到宿主快照，暂不可判定/, "工作区版用通用措辞");
+	assert.doesNotMatch(text, /该会话未运行/, "工作区版没有会话，不能说该会话未运行");
+	assert.match(text, /暂不可判定/);
+	assert.doesNotMatch(text, /未注册/);
+});
+
+test("对话版：真·未注册（宿主确认没有）仍然显示「未注册」", async () => {
+	const { rt, box, slots } = await boot({
+		expression: "A",
+		viewExtras: {
+			modelVisible: [],
+			userOnly: [],
+			unregistered: ["alpha"],
+			undeterminable: [],
+		},
+	});
+	slots.helpers.manageSet({ open: true, conversationId: "sess-1" });
+	const tree = await rt.settle(slots["shell.overlay"].component, {}, 8, box);
+	const text = allText(tree);
+	assert.match(text, /未注册/, "确认没注册的还是要说未注册（不能被新状态吞掉）");
+	assert.match(text, /模型侧根本不存在/);
+	assert.doesNotMatch(text, /暂不可判定/);
+});

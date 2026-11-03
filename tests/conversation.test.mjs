@@ -13,6 +13,7 @@ import { createServices } from "../src/service.js";
 import { createMemoryRepository } from "../src/storage/repository.js";
 import { createApiHandler } from "../src/api.js";
 import { emptyOwnConfig, ownConfigFromWorkspace } from "../src/domain/conv.js";
+import { attachView } from "../src/domain/workspace.js";
 
 const EMPTY = { orTags: [], andGroups: [] };
 const UNIVERSE = ["alpha", "beta", "gamma", "delta"];
@@ -510,6 +511,19 @@ test("API：发现结果为 0 时 purge-stale 拒绝执行（宿主未就绪保�
 		assert.equal(d.code, "NO_SKILLS");
 		assert.deepEqual(s.tags.tagsForSkill("alpha"), ["t1"], "拒绝执行时绝不动数据");
 		assert.deepEqual(s.tags.tagsForSkill("beta"), ["t2"]);
+	});
+});
+
+test("API：宿主视角不完整时 purge-stale 拒绝执行（否则会误删仍然有效的关联）", async () => {
+	// 2026-11-03（#1 的第二个出口）：没拿到 agent scope 时发现结果偏小 → stale 偏大。
+	// 同一根因，不能只修展示不管这里。
+	const { services: s } = await boot();
+	const handler = createApiHandler(s, null, () => attachView([{ name: "alpha" }], false), () => null);
+	await withServer(handler, async (call) => {
+		const d = await call("/skills/purge-stale", {});
+		assert.equal(d.ok, false);
+		assert.equal(d.code, "INCOMPLETE_VIEW");
+		assert.deepEqual(s.tags.tagsForSkill("beta"), ["t2"], "拒绝执行时绝不动数据");
 	});
 });
 

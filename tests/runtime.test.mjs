@@ -9,7 +9,7 @@ import assert from "node:assert/strict";
 import {
 	effectiveSkillsConfig, workspaceIdOfSession, workspaceIdOfPath, runtimeDeniedSkills,
 	computeRuntimeDeniedSkillIds,
-	getWorkspaceRegistry, apply, createFilterProvider, createUpstreamAdapter,
+	getWorkspaceRegistry, apply, createFilterProvider, createUpstreamAdapter, viewIsComplete,
 } from "../lib/index.js";
 
 const EMPTY = { orTags: [], andGroups: [] };
@@ -470,6 +470,46 @@ test("createSkillDiscoverer：宿主快照里同名条目优先，invocation 与
 	assert.equal(out.length, 1);
 	assert.equal(out[0].registered, true, "宿主那条才是权威");
 	assert.equal(out[0].invocation.modelInvocable, false);
+});
+
+test("createSkillDiscoverer：对话没有 live agent 时，技能注册状态是「不可判定」而不是「未注册」", async () => {
+	// 2026-11-03（#1）的真实场景：历史会话的 conversationId 在 agents.list() 里
+	// 找不到 → 解析不出 scope → 宿主只收 global 层 → 用户级技能根整段消失。
+	// 旧实现把这种情况标成 registered:false，界面于是断言「模型侧根本不存在」。
+	const discovered = createSkillDiscoverer({
+		hostRegistry: {
+			async snapshot() {
+				// 没传 scope 时宿主只收 global：这里模拟"该返回的名字没返回"
+				return { skills: [{ name: "bundled-only", registered: true }] };
+			},
+		},
+		rootsScan: () => [{ name: "user-dsh-skill", path: "C:/home/.dsh/skills/x/SKILL.md" }],
+		agents: { list: () => [] }, // 空列表 = 这个 conversationId 没有 live agent
+	});
+	const out = await discovered("/w", { conversationId: "session-not-running" });
+	const byName = Object.fromEntries(out.map((s) => [s.name, s]));
+	assert.equal(byName["bundled-only"].registered, true, "宿主这趟确实返回了的，仍然是已注册");
+	assert.equal(byName["user-dsh-skill"].registered, null, "这一趟没问到，不等于宿主没注册");
+	assert.equal(viewIsComplete(out), false, "整个发现结果要带「宿主视角不完整」的标记");
+});
+
+test("createSkillDiscoverer：有 live agent 且宿主返回了完整快照时，自扫描补进来的仍是 false", async () => {
+	// 回归底线：能拿到 scope 的场景行为一个字都不能变。
+	const agent = { id: "agent-1", session: { id: "session-live" } };
+	const discovered = createSkillDiscoverer({
+		hostRegistry: {
+			async snapshot(options) {
+				assert.ok(options.scope, "解析到 agent 时必须把 scope 传给宿主");
+				return { skills: [{ name: "bundled-only", registered: true }] };
+			},
+		},
+		rootsScan: () => [{ name: "scan-only" }],
+		agents: { list: () => [agent] },
+	});
+	const out = await discovered("/w", { conversationId: "session-live" });
+	const byName = Object.fromEntries(out.map((s) => [s.name, s]));
+	assert.equal(byName["bundled-only"].registered, true);
+	assert.equal(byName["scan-only"].registered, false, "视角完整时，自扫描多出来的就是真·未注册");
 });
 
 test("createSkillDiscoverer：宿主注册表的技能优先，插件 provider 贡献的技能必须出现", async () => {

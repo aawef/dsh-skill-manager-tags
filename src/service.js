@@ -574,7 +574,7 @@ export function createServices(repo, opts = {}) {
 			});
 			// 口径拆分：visible 是「标签选出来的」，modelVisible 是「模型真能看到的」。
 			// 两者不等时（disable-model-invocation / 宿主不认识的技能），前端必须分开显示。
-			return { ...view, ...splitModelVisible(view.visible, ctx.catalog ?? []) };
+			return { ...view, ...splitModelVisible(view.visible, ctx.catalog ?? [], { registryUnavailable: ctx.registryUnavailable === true }) };
 		},
 		/** 该工作区应被屏蔽的技能名集合（供 deny-shadow 使用） */
 		denied(workspaceId, ctx = {}) {
@@ -857,7 +857,7 @@ export function createServices(repo, opts = {}) {
 				candidates: ctx.candidates ?? [],
 				universe: ctx.universe ?? [],
 			});
-			return { ...view, ...splitModelVisible(view.visible, ctx.catalog ?? []) };
+			return { ...view, ...splitModelVisible(view.visible, ctx.catalog ?? [], { registryUnavailable: ctx.registryUnavailable === true }) };
 		},
 		/** 该对话应被 deny-shadow 的技能名集合。 */
 		ownDenied(conversationId, ctx = {}) {

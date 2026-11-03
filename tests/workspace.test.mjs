@@ -132,6 +132,59 @@ test("splitModelVisible：catalog 里完全没有的名字按模型可见处理�
 	assert.deepEqual(out.modelVisible, ["ghost"]);
 });
 
+test("splitModelVisible：宿主快照取不到时，没问到的名字进「不可判定」，绝不断言未注册", () => {
+	// 2026-11-03（#1）：disabled 会话拿不到 agent scope → 宿主只给 global 层 →
+	// 用户级技能根整段消失。此时 catalog 里那些名字的注册状态是**未知**，
+	// 不是 false。把它们标成 unregistered 等于断言「模型侧根本不存在」——那是撒谎。
+	const out = splitModelVisible(
+		["scanned-only", "unknown"],
+		[
+			{ name: "scanned-only", registered: false },
+			{ name: "unknown" },
+		],
+		{ registryUnavailable: true },
+	);
+	assert.deepEqual(out.modelVisible, [], "不可判定不能算进模型可见");
+	assert.deepEqual(out.unregistered, [], "不可判定绝不能落进「宿主未注册」");
+	assert.deepEqual(out.userOnly, [], "不可判定也不能被说成仅手动");
+	assert.deepEqual(out.undeterminable, ["scanned-only", "unknown"]);
+});
+
+test("splitModelVisible：视角不完整时，宿主**明确返回过**的技能仍照常判定（已知事实不被未知吞掉）", () => {
+	// 2026-11-03 复核：视角不全只让"没返回"变得不可信，不能让宿主已经确认的条目
+	// 一起变成未知 —— 否则「模型可见 N」在历史会话里会直接掉到 0。
+	const out = splitModelVisible(
+		["known", "manual-only", "gone", "unknown"],
+		[
+			{ name: "known", registered: true },
+			{ name: "manual-only", registered: true, invocation: { modelInvocable: false, userInvocable: true } },
+			{ name: "gone", registered: false },
+		],
+		{ registryUnavailable: true },
+	);
+	assert.deepEqual(out.modelVisible, ["known"], "宿主确认过的照常算模型可见");
+	assert.deepEqual(out.userOnly, [{ name: "manual-only", reason: "disable-model-invocation" }], "仅手动标依然成立");
+	assert.deepEqual(out.unregistered, [], "视角不全时不允许断言未注册");
+	assert.deepEqual(out.undeterminable, ["gone", "unknown"], "只有没问到的降级为未知");
+});
+
+test("splitModelVisible：有宿主快照时口径不变，只有 null 才进「不可判定」", () => {
+	// 回归底线：真正未注册的（宿主 registry 里没有、只有自扫描看得见）仍然要
+	// 单独列出来，不能被「不可判定」这个新状态吞掉。
+	const out = splitModelVisible(
+		["a", "b", "c"],
+		[
+			{ name: "a", registered: true },
+			{ name: "b", registered: false },
+			{ name: "c", registered: null, invocation: { modelInvocable: false, userInvocable: true } },
+		],
+		{ registryUnavailable: false },
+	);
+	assert.deepEqual(out.modelVisible, ["a"]);
+	assert.deepEqual(out.unregistered, ["b"]);
+	assert.deepEqual(out.undeterminable, ["c"], "未知状态优先于「仅手动」：连注册都没确认，谈不上只手动");
+});
+
 test("splitModelVisible：universe 口径不变 —— deny-shadow 仍用 visible 算，不被本函数影响", () => {
 	const p = {
 		config: EMPTY, manualSkills: [], disabledSkills: [],
@@ -375,6 +428,43 @@ test("API：右列数据 + 添加/禁用/恢复/移除 全链路", async () => {
 		assert.equal(d.workspace.expression, "");
 		d = await call("/workspaces/skills", { workspaceId: "ws-1" });
 		assert.deepEqual(d.view.visible, ["alpha", "beta", "gamma", "delta"]);
+	} finally {
+		await new Promise((r) => server.close(r));
+	}
+});
+
+// 2026-11-03（#1）：宿主视角不完整时，整列技能是「不可判定」，不是「未注册」。
+// 这条覆盖的是服务层把 registryUnavailable 一路送到 view 的那根线 —— 断掉的话
+// 界面就会重新开始断言「模型侧根本不存在」。
+test("API：宿主视角不完整时 view 给出 undeterminable，且不把 registered:false 当结论", async () => {
+	const s = await boot();
+	// 发现器返回的数组带 Symbol 记号 → 模拟一版"没拿到 scope"的发现结果
+	const { attachView } = await import("../src/domain/workspace.js");
+	const listSkills = () => attachView([
+		// 宿主这趟**确实返回过**的名字：已知事实，不被"视角不全"抹掉（2026-11-03 复核）
+		{ name: "alpha", path: "/a/SKILL.md", source: "bundled", registered: true, invocation: { modelInvocable: true, userInvocable: true } },
+		// 没问到的：只有"未知"这一种结论
+		{ name: "gamma", path: "/g/SKILL.md", source: "C:\\home\\.dsh\\skills", registered: null, invocation: { modelInvocable: true, userInvocable: true } },
+	], false);
+	const handler = createApiHandler(s, null, listSkills);
+	const server = (await import("node:http")).createServer((req, res) => void handler(req, res));
+	await new Promise((r) => server.listen(0, r));
+	const port = server.address().port;
+	const call = async (path, body) => {
+		const r = await fetch(`http://127.0.0.1:${port}/skill-tag/api${path}`, {
+			method: "POST",
+			headers: { "content-type": "application/json" },
+			body: JSON.stringify(body ?? {}),
+		});
+		return { status: r.status, ...(await r.json()) };
+	};
+	try {
+		const d = await call("/workspaces/skills", { workspaceId: "ws-1" });
+		assert.equal(d.ok, true);
+		assert.deepEqual(d.view.undeterminable, ["gamma"], "只把没问到的那条算作不可判定");
+		assert.deepEqual(d.view.unregistered, [], "不许借此断言任何一个未注册");
+		assert.deepEqual(d.view.modelVisible, ["alpha"], "宿主确认过的仍算模型可见，不能被未知吞掉");
+		assert.equal(d.catalog.find((x) => x.name === "gamma").registered, null, "null 必须原样透传");
 	} finally {
 		await new Promise((r) => server.close(r));
 	}
