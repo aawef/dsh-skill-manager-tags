@@ -561,17 +561,24 @@ test("从 data-row-key 反推 workspaceId；ungrouped 组返回 null", async () 
 	assert.equal(helpers.workspaceIdOfRowKey(null), null);
 });
 
-test("菜单识别：只有「重命名 + 删除工作区」两项才注入，其它菜单不碰", async () => {
+test("菜单识别：首项重命名 + 存在删除项即注入，项数变了也不丢", async () => {
 	const { sandbox, box } = load();
 	box.fetch = makeFetcher({ calls: [] });
 	let helpers = null;
 	sandbox.window.__ModuleLoader__.load = ({ factory }) => { helpers = factory(() => makeRuntime().react).__test; };
 	vm.runInNewContext(SOURCE, sandbox, { filename: "lib/client.js" });
+	// 宿主 0.2.x 之前的两项形状
 	assert.equal(helpers.isWorkspaceMenu(["重命名", "删除工作区"]), true);
 	assert.equal(helpers.isWorkspaceMenu(["Rename", "Delete workspace"]), true);
-	assert.equal(helpers.isWorkspaceMenu(["重命名"]), false, "会话菜单项数不同");
-	assert.equal(helpers.isWorkspaceMenu(["重命名", "删除工作区", "其他"]), false);
-	assert.equal(helpers.isWorkspaceMenu(["归档", "删除"]), false);
+	// 宿主新增「在文件夹显示」后的三项形状 —— 正是用户报告里入口消失的那份菜单
+	assert.equal(helpers.isWorkspaceMenu(["重命名", "在文件夹显示", "删除工作区"]), true, "宿主加了菜单项后入口不得消失");
+	assert.equal(helpers.isWorkspaceMenu(["Rename", "Show in folder", "Delete workspace"]), true);
+	assert.equal(helpers.isWorkspaceMenu(["重命名", "删除工作区", "其他"]), true, "末尾多一项也不该丢");
+	// 非工作区菜单仍不碰
+	assert.equal(helpers.isWorkspaceMenu(["重命名"]), false, "只有一项不注入");
+	assert.equal(helpers.isWorkspaceMenu(["归档", "删除"]), false, "首项不是重命名");
+	assert.equal(helpers.isWorkspaceMenu(["置顶", "重命名", "归档", "删除"]), false, "会话行菜单首项是置顶");
+	assert.equal(helpers.isWorkspaceMenu(["重命名", "归档"]), false, "没有删除项");
 	assert.equal(helpers.isWorkspaceMenu([]), false);
 });
 
