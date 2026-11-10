@@ -7,3 +7,10 @@ Thumbs.db
 # 由 render-*.mjs 生成的界面预览产物（可重新生成，不必入库）
 docs/preview/*.html
 docs/preview/*.png
+
+
+# 本地调试与临时产物（不属于发布内容）
+临时脚本/
+.local/
+undefined/
+%SystemDrive%/
