@@ -14,3 +14,15 @@ docs/preview/*.png
 .local/
 undefined/
 %SystemDrive%/
+
+# 本地草稿与设计产物（不属于发布内容，别人下载用不到）
+docs/图片/
+docs/工作暂存*
+docs/技能标签体系.md
+docs/skill-tag-plan-final.json
+docs/标签组配置-preview.html
+如何发布自己的插件.md
+
+# 本地 agent 配置（每台机器自己生成）
+AGENTS.md
+docs/agents/
