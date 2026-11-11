@@ -4,8 +4,8 @@
 // 中的 ManageTagsDialog / TagSettingsDialog，把渲染结果序列化成 HTML，再用 headless
 // Edge 截图。这样预览图和真实组件同源，不会"图文不符"。
 //
-// 用法：node docs/preview/render-manage-preview.mjs
-// 产物：docs/preview/管理标签-preview.html
+// 用法：node dev/preview/render-manage-preview.mjs
+// 产物：dev/preview/管理标签-preview.html
 
 import fs from "node:fs";
 import vm from "node:vm";
@@ -275,4 +275,4 @@ fs.writeFileSync(path.join(HERE, "管理标签-preview.html"), `<!doctype html><
  .shot>div>div{margin:0 auto}
  h1{font-size:16px;padding:0 24px;margin:8px 0 4px}
 </style></head><body><h1>管理标签 · 界面预览</h1>${htmls.map((h) => h.replace(/^[\s\S]*<body>/, "").replace(/<\/body>[\s\S]*$/, "")).join("")}</body></html>`);
-console.log("wrote docs/preview/管理标签-preview.html");
+console.log("wrote dev/preview/管理标签-preview.html");

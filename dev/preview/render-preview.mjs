@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
-// 本脚本可在插件内(docs/preview/)或临时工作区运行，两种位置都自动定位插件源码
+// 本脚本可在插件内(dev/preview/)或临时工作区运行，两种位置都自动定位插件源码
 const CANDIDATES = [
 	path.resolve(HERE, "..", "..", "lib", "client.js"),
 	path.resolve(HERE, "..", "..", "..", ".dsh", "profiles", "web", "my-plugins", "dsh-skill-tag", "lib", "client.js"),

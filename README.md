@@ -355,7 +355,7 @@ npm test          # 194 项
 界面预览可以在没有浏览器扩展时生成静态 HTML：
 
 ```bash
-node docs/preview/render-preview.mjs     # → docs/preview/标签组配置-preview.html
+node dev/preview/render-preview.mjs      # → dev/preview/标签组配置-preview.html
 ```
 
 （产物已在 `.gitignore` 里排除。）

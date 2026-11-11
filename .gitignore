@@ -5,8 +5,8 @@ Thumbs.db
 *.log
 
 # 由 render-*.mjs 生成的界面预览产物（可重新生成，不必入库）
-docs/preview/*.html
-docs/preview/*.png
+dev/preview/*.html
+dev/preview/*.png
 
 
 # 本地调试与临时产物（不属于发布内容）
@@ -20,7 +20,6 @@ docs/图片/
 docs/工作暂存*
 docs/技能标签体系.md
 docs/skill-tag-plan-final.json
-docs/标签组配置-preview.html
 如何发布自己的插件.md
 
 # 本地 agent 配置：配置文件随仓库共享，只有本机选后端的状态不入库

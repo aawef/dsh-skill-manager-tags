@@ -3,8 +3,8 @@
 // 做法同 render-manage-preview.mjs：用迷你 React 运行时真正执行 lib/client.js 里的
 // ManageTagsDialog（对话作用域）与 TagSettingsDialog，序列化成 HTML，再用 headless Edge 截图。
 //
-// 用法：node docs/preview/render-conv-preview.mjs
-// 产物：docs/preview/对话管理标签-preview.html
+// 用法：node dev/preview/render-conv-preview.mjs
+// 产物：dev/preview/对话管理标签-preview.html
 
 import fs from "node:fs";
 import vm from "node:vm";
@@ -324,4 +324,4 @@ const head = `<!doctype html><html lang="zh"><head><meta charset="utf-8"><title>
  code{background:#1b2130;padding:1px 5px;border-radius:4px}
 </style></head><body><h1>对话 → 管理标签 · 界面预览</h1>`;
 fs.writeFileSync(path.join(HERE, "对话管理标签-preview.html"), head + htmls.join("") + "</body></html>");
-console.log("wrote docs/preview/对话管理标签-preview.html");
+console.log("wrote dev/preview/对话管理标签-preview.html");

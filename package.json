@@ -29,12 +29,18 @@
     "lib",
     "src",
     "skills",
-    "docs",
-    "!docs/agents",
     "tools",
     "cordis.patch.yml",
     "README.md",
-    "LICENSE"
+    "LICENSE",
+    "docs/给技能打标签.md",
+    "docs/标签组配置.md",
+    "docs/管理标签.md",
+    "docs/对话管理标签.md",
+    "docs/技能发现与宿主对齐.md",
+    "docs/deny-shadow-覆盖率.md",
+    "docs/修复指南.md",
+    "docs/skill联系tag与打开文件夹.md"
   ],
   "dsh": {
     "bundle": {
