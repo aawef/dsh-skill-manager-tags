@@ -574,16 +574,31 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 			if ((path === "/workspaces/push-preview" || path === "/workspaces/push") && (method === "GET" || method === "POST")) {
 				const wid = q("workspaceId");
 				if (!wid) return json(res, 400, { ok: false, error: "缺少 workspaceId" });
-				// 该工作区下的对话：宿主 sessionIds 是权威来源。
-				// resolveWorkspaceSessions 没注入时退回对话自己记录的 sourceWorkspaceId。
-				let ids = [];
+				// 该工作区下的对话：**宿主 sessionIds 是唯一权威来源**。
+				//
+				// 这里曾经无条件并入「插件表里 own.sourceWorkspaceId === wid」的行，
+				// 本意是兜住宿主列表里没有的历史会话（CHANGELOG 0.1.13）。但那个字段是
+				// **继承时刻的快照**，会话被移出工作区后不会清空，于是每一条「曾经属于
+				// 本工作区、现在不属于」的会话都永久留在下发名单里：issue #5 里本工作区
+				// 多算 1 个、StudyMate 多算 72 个，弹窗总数因此虚高。
+				//
+				// 新口径（2026-11-11，用户确认）：能拿到宿主列表就**只认宿主**；
+				// 拿不到（测试面 / 极简宿主 / 调用抛错）才退回插件自己的来源工作区记录。
+				// 注意「拿到了但是空数组」与「拿不到」必须分开：前者是「本工作区确实没有
+				// 对话」，此时退回快照会把孤儿又捞回来，等于没修。
+				let hostIds = null;
 				if (typeof resolveWorkspaceSessions === "function") {
-					try { ids = resolveWorkspaceSessions(wid) ?? []; } catch { ids = []; }
+					try {
+						const got = resolveWorkspaceSessions(wid);
+						if (Array.isArray(got)) hostIds = got;
+					} catch { hostIds = null; }
 				}
-				if (!Array.isArray(ids)) ids = [];
-				// 并入已存在的 own.sourceWorkspaceId 指向本工作区的对话（宿主列表可能不含历史会话）
-				for (const c of services._caches.conversations.values()) {
-					if (c?.own?.sourceWorkspaceId === wid) ids.push(c.conversationId);
+				let ids = hostIds ?? [];
+				if (hostIds === null) {
+					// 兜底：宿主列表拿不到时，才用对话自己记录的来源工作区收拢。
+					for (const c of services._caches.conversations.values()) {
+						if (c?.own?.sourceWorkspaceId === wid) ids.push(c.conversationId);
+					}
 				}
 				ids = [...new Set(ids.filter(Boolean))];
 

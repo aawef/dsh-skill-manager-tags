@@ -697,6 +697,51 @@ test("API：下发缺少 workspaceId 时报 400，且不动任何数据", async 
 	} finally { await close(); }
 });
 
+test("API：会话已不属于本工作区时，不再计入下发名单（issue #5）", async () => {
+	// 回归：宿主 sessionIds 才是权威来源。插件表里 own.sourceWorkspaceId 只是
+	// **继承时刻的快照**，会话被移出工作区后不会清空；旧实现把它无条件并进来，
+	// 导致弹窗总数虚高（本机实测 StudyMate 多算 72 个、dsh-skill-tag 多算 1 个）。
+	const { s, call, close } = await bootWithPush();
+	try {
+		// conv-orphan：曾属于 ws-1，现在宿主列表里已经没有它了
+		await s.conversations.inheritFromWorkspace("conv-orphan", "ws-1");
+		assert.equal(s.conversations.own("conv-orphan").sourceWorkspaceId, "ws-1");
+
+		const pv = await call("/workspaces/push-preview", { workspaceId: "ws-1" });
+		assert.equal(pv.ok, true);
+		assert.equal(pv.total, 3, "只算宿主 sessionIds 的 3 个，孤儿不计入");
+		assert.deepEqual(Array.from(pv.fresh).sort(), ["sess-a", "sess-b", "sess-c"]);
+		assert.deepEqual(Array.from(pv.configured), [], "孤儿不能冒充「已有自己的配置」");
+
+		// 下发同样不碰孤儿：它的 own 保持原样（不被覆盖，也不被当成目标）
+		const d = await call("/workspaces/push", { workspaceId: "ws-1", overwrite: true });
+		assert.equal(d.ok, true);
+		assert.deepEqual(Array.from(d.updated).sort(), ["sess-a", "sess-b", "sess-c"]);
+		assert.ok(!Array.from(d.updated).includes("conv-orphan"), "孤儿不在下发目标里");
+	} finally { await close(); }
+});
+
+test("API：宿主返回空列表时不回退到快照（否则孤儿又被捞回来）", async () => {
+	// 「拿到了但是空数组」与「拿不到」必须分开：前者是「本工作区确实没有对话」。
+	const { services: s } = await boot();
+	await seedWorkspace(s);
+	await s.conversations.inheritFromWorkspace("conv-orphan", "ws-1");
+	// 注入了 resolver，但对 ws-1 明确返回空数组
+	const handler = createApiHandler(s, null, () => UNIVERSE.map((name) => ({ name })), () => "ws-1", null, () => []);
+	const server = (await import("node:http")).createServer((req, res) => void handler(req, res));
+	await new Promise((r) => server.listen(0, r));
+	const port = server.address().port;
+	try {
+		const r = await fetch(`http://127.0.0.1:${port}/skill-tag/api/workspaces/push-preview`, {
+			method: "POST", headers: { "content-type": "application/json" },
+			body: JSON.stringify({ workspaceId: "ws-1" }),
+		});
+		const d = await r.json();
+		assert.equal(d.ok, true);
+		assert.equal(d.total, 0, "宿主说没有对话，就不该拿快照凑数");
+	} finally { await new Promise((r) => server.close(r)); }
+});
+
 test("API：没有宿主会话列表时，退回 own.sourceWorkspaceId 收拢对话", async () => {
 	const { services: s } = await boot();
 	await seedWorkspace(s);
