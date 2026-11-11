@@ -30,6 +30,7 @@
     "src",
     "skills",
     "docs",
+    "!docs/agents",
     "tools",
     "cordis.patch.yml",
     "README.md",

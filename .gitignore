@@ -23,6 +23,6 @@ docs/skill-tag-plan-final.json
 docs/标签组配置-preview.html
 如何发布自己的插件.md
 
-# 本地 agent 配置（每台机器自己生成）
-AGENTS.md
-docs/agents/
+# 本地 agent 配置：配置文件随仓库共享，只有本机选后端的状态不入库
+docs/agents/workspace.yaml
+docs/agents/workspace.json
