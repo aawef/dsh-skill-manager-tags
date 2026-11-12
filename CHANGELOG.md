@@ -76,6 +76,19 @@
 - 已核对客户端调用方式：受限端点全部走 `apiPost`（JSON + POST），
   `/workspaces/expression`、`/workspaces/push`、`/conversations/config` 的调用不受影响。
 
+### 清理
+
+- **删除仓库根目录的 `screenshots.json`**：该文件是一份 6 条 `images/*.png` 路径的
+  清单，当年按「插件市场读取」的设想加进来，但从未被任何代码消费。核对结果：DSH
+  安装目录下 13,189 个 JS 文件里对 `screenshots.json` 的引用数为 **0**；市场索引格式
+  （`MarketPlugin`）能放图的字段只有单个 `icon`，不存在截图数组；市场详情卡的实际取图
+  链路是「README.md 里的绝对 URL 直接交给浏览器加载」（`dsh-client-ui-plugin-market`
+  的 `detailImage` 对带协议的地址返回 `undefined`），与这个清单无关。
+
+  `images/` **未**受影响：README 用
+  `https://cdn.jsdelivr.net/gh/aawef/dsh-skill-manager-tags@main/images/*.png`
+  绝对地址引用这 6 张图，GitHub、npm、插件市场三处都靠它显示。
+
 ### 说明
 
 - 本轮**未**改动任何对外行为：标签语义、表达式语法、下发规则、配置与存储格式全部
