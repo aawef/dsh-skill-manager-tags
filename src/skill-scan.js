@@ -70,6 +70,17 @@ function collectRoot(dir, depth, root, out) {
 	}
 }
 
+/**
+ * 合法技能名：kebab-case，与宿主 @deepseek-ai/dsh-skill 的 SKILL_NAME 同一正则。
+ *
+ * 为什么扫描器也要过这一关（2026-11-12，issue #6）：扫描结果会进 universe，
+ * 于是 denied = universe − visible 里也会出现它；只要这个名字非法，宿主
+ * validateCandidate 就会抛错、整个 provider 作废、**所有对话**都跑不下去。
+ * 宿主自己的文件系统 provider 早就这么做了（`skill file ... ignored: invalid
+ * skill name`），自扫描必须同口径，否则插件会把宿主本来就不认的名字当成技能。
+ */
+const SKILL_NAME_RE = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
+
 function pushSkill(out, mdPath, root, disabled, fallbackName) {
 	let fm = null;
 	try {
@@ -77,8 +88,15 @@ function pushSkill(out, mdPath, root, disabled, fallbackName) {
 	} catch {
 		return; // unreadable file — skip
 	}
+	// 裸放的根级 .md（flat skill）与宿主同口径：**必须有 frontmatter**。
+	// 没有 frontmatter 的 .md 只是一份普通文档（README、笔记…），不是技能；
+	// 旧实现会用文件名凭空造一个技能名，正是 issue #6 的来源。
+	const isFlat = fallbackName !== undefined;
+	if (isFlat && fm === null) return;
 	const name = fm?.name || fallbackName || path.basename(path.dirname(mdPath));
 	if (!name) return;
+	// 非法名字宁可丢掉：它既进不了宿主注册表，还会炸掉整批候选。
+	if (!SKILL_NAME_RE.test(name)) return;
 	out.push({
 		name,
 		description: fm?.description ?? "",

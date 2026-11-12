@@ -1,4 +1,49 @@
-# CHANGELOG
+## 0.1.18 — 2026-11-12 非法技能名不再炸掉整轮对话（issue #6）
+
+### 现象
+
+报告人（DSH 桌面端 0.2.2-rc.1）在 `~/.dsh/skills` 根目录下放了一个不符合 skill 规范的
+`README-官方技能说明.md`，结果**所有对话**每轮都失败：
+
+```
+skill provider "skill-tag" returned invalid skill name "README-官方技能说明"
+```
+
+### 根因
+
+两条链路叠加：
+
+1. **名字从哪来**：`src/skill-scan.js` 的 `collectRoot` 把技能根下**裸放的 `*.md`**
+   当成技能，名字取文件名去掉 `.md`。宿主自己的 filesystem provider 对同样的文件
+   要求**必须有 frontmatter 且名字合法**（否则打 `skill file ... ignored: invalid skill
+   name`）；自扫描没跟这个口径，凭空造出了一个宿主根本不认的名字。
+2. **为什么没被拦住**：`createFilterProvider().list()` 只对**第二段**（`denied` 里
+   看不见的名字）做了 `isSkillName` 校验，**第一段**（看得见的上游 summary）整条照抄。
+   宿主 `validateCandidate` 见到非法 `name` 直接 throw，**一个候选不合法 = 整个
+   provider 这一趟作废**，于是整轮对话失败。
+
+`docs/技能发现与宿主对齐.md:180` 早就记过「一个不合法候选会让整个 `provider.list()`
+抛错」，但当时只堵了 `denied` 那条入口，扫盘这条一直敞着。
+
+### 修复
+
+- `lib/index.js`：第一段也过 `isSkillName()`，非法名字跳过并计入 `invalid`；
+  两段的脏名字合并成一条 warn（`names skipped (not kebab-case)`，健康路径仍然不吭声）。
+- `src/skill-scan.js`：根级裸放 `.md` **必须有 frontmatter** 才算技能；名字不是
+  kebab-case 的一律跳过。与宿主 `discoverRoot` / `parseSkillFile` 同口径。
+
+两层是纵深防御：扫描器把名字挡在 universe 之外（根治），provider 第一段兜住任何
+别的来源漏进来的脏名字（比如宿主快照或历史 denied）。
+
+### 测试
+
+- 新增 `tests/invalid-skill-name.test.mjs`（3 条）：看得见的脏名字不得进候选、
+  与"看不见"那条路径结论一致、旁边干净影子不被连坐。
+- `tests/skill-scan.test.mjs` 新增 2 条：根级裸放无 frontmatter 的 `.md` 不算技能、
+  目录 bundle 名字非法同样跳过。
+- 全量 `node --test "tests/*.test.mjs"`：192 passed / 0 failed（原 187 + 新增 5）。
+- 端到端手验（真实临时技能根，跑完即删）：报告人现场形态下 scan 只返回合法技能、
+  provider 不再抛错；把脏名字直接塞进上游 summary，第一段也能拦下并打 warn。
 
 ## 0.1.17 — 2026-11-11 「下发到所有对话」按宿主 sessionIds 计数（issue #5）
 
