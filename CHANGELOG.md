@@ -1,3 +1,88 @@
+## 0.1.19 — 2026-11-12 生命周期与安全加固（Cordis 所有权审计）
+
+一轮针对宿主侧所有权与生命周期的专项审计。功能行为不变，改动集中在资源的取得、
+释放顺序，以及 HTTP 端点的来源校验。
+
+### 安全
+
+- **HTTP 端点接入来源校验**：`src/api.js` 的 handler 原先只读 path/method，不看
+  `Origin`/`Host`，写操作直接落库。webServer 自身只做路由匹配、**不做任何来源检查**
+  （其 `readResource` 文档明写 "checks no cookie, Host, or Origin"），这道防线在
+  `ctx.connection` 上。现在 `mountApi` 接收 `connection`，handler 首行调
+  `requestRejection({ headers })`，返回 401/403 即拒。
+
+- **写端点收敛为 POST**：`/workspaces/expression`、`/workspaces/push`（批量覆盖）、
+  `/conversations/config` 原先同时接受 GET，配合 query 参数构成**无需预检的 CSRF**——
+  `<img src="http://127.0.0.1:<port>/skill-tag/api/workspaces/push?...">` 就能触发。
+  `/workspaces/push-preview` 是只读试算，一并改为 POST 以保持一致。客户端本就全走
+  `apiPost`，不受影响。
+
+- **写操作强制 JSON content-type**：POST/PUT 要求 `application/json`，否则 415。
+  挡掉 `text/plain` 的跨源 simple request（它不触发 CORS 预检）。
+
+- **`readBody` 超限后不再继续累积**：原实现在超限时 `reject` 但**仍继续拼接字符串**，
+  等于把「拒绝」写成了「慢慢吃满内存」。现在超限即 `req.destroy()` 并停止累积。
+
+### 修复
+
+- **`controls` 移出模块作用域**：`const controls = new Set()` 原在模块顶层，每个 agent
+  注册 provider 时 `controls.add(control)`，但**全文件没有 `controls.delete`**——只在插件
+  卸载时 `clear()`。agent 销毁后旧 control 留在集合里，之后每次 `recomputeDenials` 都要
+  对已释放的对象白调一次 `invalidate()`（靠 try/catch 吞异常）。现在 `controls` 由
+  `apply` 创建，`attachFilterProvider` 的清理闭包先 `controls.delete(ownControl)`
+  再撤 provider。
+
+- **`sessionDenials` 随会话销毁清理**：该 Map 只增不减，每开一个对话就多一条 Set，
+  关掉也不删。现在监听 `session/disposed` 删除对应条目。
+
+- **domain 关闭排在在飞刷新之后（并发释放竞态）**：Cordis 的 fiber 卸载是**兄弟 disposer
+  并发**（`vendor/cordis fiber.ts:720` `Promise.all(this._disposables...)`），原先
+  `domain.close()` 与仍在跑的 `refreshSession` 同时执行，后者会撞上
+  `DomainError("closed")`。现在用一个 `inflight` 登记表：`domain` 的 disposer 先置
+  `shuttingDown`（拒绝新的刷新）→ `await Promise.allSettled([...inflight])` 等已接受的
+  结算 → 最后才 `domain.close()`。
+
+- **`void refreshSession(agent)` 改为被跟踪**：原先直接丢弃 promise，卸载时既不等它
+  结算也不取消它。现在经 `track()` 登记，dispose 时会等它跑完。
+
+- **删除未使用的 `ON` 常量**：`const ON = { modelInvocable: true, userInvocable: true }`
+  全文再无引用。
+
+### 新增
+
+- `locale/en.json` 与 `locale/zh.json`：插件管理页显示「Skill tags / 技能标签」和真实
+  的能力描述，而不是退回包名。`package.json` 补 `./locale/*.json` 导出。
+  图标使用面板默认图形。
+
+### 关于 `inject` 与兜底分支
+
+`inject` 声明了 `skills / agents / storageDomain / webServer` 四项强依赖，但代码里保留了
+`storageDomain` / `webServer` 缺席时的兜底（内存仓库、不挂 API）。审计时曾判定这是
+「走不到的死代码」并删除，但 `tests/runtime.test.mjs` 立刻红了两条：
+
+```
+✖ apply() 在最小 cordis 面上不抛（workspaceRegistry 未注入 / 无 agents）
+  Cannot read properties of null (reading 'open')
+```
+
+该测试直接构造不带 `storageDomain` 的 ctx 调 `apply()`，验证「缺可选服务不崩溃」这条
+既有契约。所以兜底**不是死代码**，它守的是另一条约束。本次保留兜底并补注释说明这个
+双重性——真宿主里 `inject` 会先挡住激活，测试面靠兜底保证不抛。
+
+### 测试
+
+- 全量 `node --test "tests/*.test.mjs"`：**192 passed / 0 failed**（与改动前一致，
+  无回归）。
+- 已核对客户端调用方式：受限端点全部走 `apiPost`（JSON + POST），
+  `/workspaces/expression`、`/workspaces/push`、`/conversations/config` 的调用不受影响。
+
+### 说明
+
+- 本轮**未**改动任何对外行为：标签语义、表达式语法、下发规则、配置与存储格式全部
+  保持原样。
+- 已知未修：`mountApi` 的 `connection` 在无浏览器组合下为 `null`，此时来源校验会被
+  跳过——这是有意的降级，不是遗漏。
+
 ## 0.1.18 — 2026-11-12 非法技能名不再炸掉整轮对话（issue #6）
 
 ### 现象

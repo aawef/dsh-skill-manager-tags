@@ -57,26 +57,55 @@ function wsShape(ws) {
  *        工作区 id → 该工作区下的会话 id 列表（宿主 workspaceRegistry entity.sessionIds）。
  *        「一键下发」要知道发给谁；为 null 时退回对话自己记录的 sourceWorkspaceId。
  */
-export function createApiHandler(services, log, listSkills = null, resolveWorkspaceId = null, resolveWorkspacePath = null, resolveWorkspaceSessions = null) {
+export function createApiHandler(services, log, listSkills = null, resolveWorkspaceId = null, resolveWorkspacePath = null, resolveWorkspaceSessions = null, connection = null) {
 	const json = (res, code, obj) => {
 		res.writeHead(code, { "content-type": "application/json; charset=utf-8" });
 		res.end(JSON.stringify(obj));
 	};
+	const MAX_BODY = 1_000_000;
 	const readBody = (req) =>
 		new Promise((resolve, reject) => {
 			let data = "";
+			let settled = false;
 			req.on("data", (c) => {
+				if (settled) return;
 				data += c;
-				if (data.length > 1_000_000) reject(new Error("body too large"));
+				// 超限必须停：原实现 reject 之后仍继续累积字符串，
+				// 等于把「拒绝」写成了「慢慢吃满内存」。
+				if (data.length > MAX_BODY) {
+					settled = true;
+					req.destroy?.();
+					reject(new Error("body too large"));
+				}
 			});
-			req.on("end", () => resolve(data));
-			req.on("error", reject);
+			req.on("end", () => {
+				if (!settled) { settled = true; resolve(data); }
+			});
+			req.on("error", (e) => {
+				if (!settled) { settled = true; reject(e); }
+			});
 		});
 
 	return async function handler(req, res) {
 		const url = new URL(req.url ?? "/", "http://localhost");
 		const path = url.pathname.replace(/^\/skill-tag\/api/, "") || "/";
 		const method = req.method ?? "GET";
+
+		// 先过宿主 Connection 的 Host/Origin 与浏览器鉴权。webServer 本身不做任何
+		// 来源检查，不接这道防线的话，任意网页都能跨源调这些端点：写操作走
+		// mode:'no-cors' 的 simple request 不需要预检，读不到响应但写入已生效。
+		const rejection = connection?.requestRejection?.({ headers: req.headers });
+		if (rejection !== undefined) return json(res, rejection, { ok: false, error: "rejected" });
+
+		// 写操作必须是 JSON：挡掉 text/plain 的跨源 simple request（它不触发预检），
+		// 也让浏览器的跨源请求先走 CORS 预检。
+		if (method === "POST" || method === "PUT") {
+			const type = String(req.headers?.["content-type"] ?? "").toLowerCase();
+			if (!type.startsWith("application/json")) {
+				return json(res, 415, { ok: false, error: "content-type must be application/json" });
+			}
+		}
+
 		let body = {};
 		if (method === "POST" || method === "PUT") {
 			try {
@@ -439,7 +468,7 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 
 			// ── 「管理标签」双列界面 ───────────────────────────────────────
 			// 左列 = 标签条件（表达式）；右列 = 该工作区掌握/禁用的技能。
-			if (path === "/workspaces/expression" && (method === "POST" || method === "GET")) {
+			if (path === "/workspaces/expression" && method === "POST") {
 				// 保存左列表达式（空串 = 清空条件 = 回到"全部技能"）
 				const out = await services.workspaces.setExpression(q("workspaceId"), q("expression") ?? "");
 				return json(res, 200, { ok: true, workspace: wsShape(out.record), validation: out.validation });
@@ -571,7 +600,7 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 			//   · 已配置的对话必须显式 overwrite=true 才覆盖（界面二次勾选确认）。
 			//
 			// 这是 0.1.9 那轮修复的直接延续：用户改的东西不能被无差别覆盖。
-			if ((path === "/workspaces/push-preview" || path === "/workspaces/push") && (method === "GET" || method === "POST")) {
+			if ((path === "/workspaces/push-preview" || path === "/workspaces/push") && method === "POST") {
 				const wid = q("workspaceId");
 				if (!wid) return json(res, 400, { ok: false, error: "缺少 workspaceId" });
 				// 该工作区下的对话：**宿主 sessionIds 是唯一权威来源**。
@@ -627,7 +656,7 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 			// 对话拥有**自己的**配置快照（own）：标签条件 + 手动添加 + 禁用。
 			// 工作区配置不会自动流入对话，除非：新建对话（自动继承一次）或
 			// 用户点了「继承工作区配置」按钮。
-			if (path === "/conversations/config" && (method === "GET" || method === "POST")) {
+			if (path === "/conversations/config" && method === "POST") {
 				const cid = q("conversationId");
 				const wid = workspaceIdForConversation(cid);
 				// 打开「管理标签（对话）」是**纯读**：只保证对话行存在，绝不播种 own。
@@ -683,14 +712,19 @@ export function createApiHandler(services, log, listSkills = null, resolveWorksp
 	};
 }
 
-/** Mount the handler on a cordis ctx (inject webServer). */
-export function mountApi(ctx, services, listSkills = null, resolveWorkspaceId = null, resolveWorkspacePath = null, resolveWorkspaceSessions = null) {
+/**
+ * Mount the handler on a cordis ctx (inject webServer).
+ *
+ * connection 用来做 Host/Origin 与浏览器鉴权：webServer 自身只做路由匹配，
+ * 不做任何来源检查。它可能缺席（无浏览器组合），那时 handler 会跳过校验。
+ */
+export function mountApi(ctx, services, listSkills = null, resolveWorkspaceId = null, resolveWorkspacePath = null, resolveWorkspaceSessions = null, connection = null) {
 	ctx.effect(
 		() =>
 			ctx.webServer.register({
 				kind: "prefix",
 				path: "/skill-tag/api",
-				handler: createApiHandler(services, ctx.logger, listSkills, resolveWorkspaceId, resolveWorkspacePath, resolveWorkspaceSessions),
+				handler: createApiHandler(services, ctx.logger, listSkills, resolveWorkspaceId, resolveWorkspacePath, resolveWorkspaceSessions, connection),
 			}),
 		"skill-tag: api",
 	);

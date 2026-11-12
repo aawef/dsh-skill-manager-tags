@@ -1,0 +1,6 @@
+{
+  "meta": {
+    "title": "Skill tags",
+    "description": "Tags DSH skills and uses one boolean expression to pick, per workspace and per conversation, which subset of skills is handed to the model."
+  }
+}
