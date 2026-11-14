@@ -845,7 +845,7 @@ function openSettingsForLayout() {
 	return { rt, box, Dialog, getHelpers: () => helpers };
 }
 
-test("tag 设置弹窗：定高而非只靠 maxHeight，纵向溢出留在弹窗内（#8）", async () => {
+test("tag 设置弹窗：高度按内容自适应，纵向溢出留在弹窗内（#8）", async () => {
 	const { rt, box, Dialog } = openSettingsForLayout();
 	const tree = await rt.settle(Dialog, {}, 8, box);
 	btnByText(tree, "tag 设置")[0].props.onClick();
@@ -853,7 +853,10 @@ test("tag 设置弹窗：定高而非只靠 maxHeight，纵向溢出留在弹窗
 
 	const modal = find(opened, (n) => n.props?.style?.width === "760px")[0];
 	assert.ok(modal, "应渲染 tag 设置弹窗");
-	assert.equal(modal.props.style.height, "82vh", "弹窗必须定高，不能只靠 maxHeight 被内容撑开");
+	// 不再写死 height：定高会在一屏装得下时留出一大片空白（用户二次反馈）。
+	// 改为 maxHeight + overflowY 兜底：内容短时贴合内容，内容长时在弹窗内滚动。
+	assert.equal(modal.props.style.height, undefined, "弹窗不得写死高度（否则底部留白）");
+	assert.equal(modal.props.style.maxHeight, "82vh", "仍需 maxHeight 封顶");
 	assert.equal(modal.props.style.overflowY, "auto", "内容超长时应在弹窗内滚动，而不是画到边框外");
 	assert.equal(modal.props.style.overflowX, "hidden", "长名称不得造成横向溢出");
 });
@@ -868,7 +871,17 @@ test("tag 设置弹窗：标签组下拉可收缩，不按长文本撑宽（#8�
 	assert.ok(sel, "应有标签组下拉");
 	assert.equal(sel.props.style.minWidth, 0, "flex 子项必须 minWidth:0 才肯收缩（默认 auto 会按内容撑开）");
 	assert.equal(sel.props.style.maxWidth, "100%", "下拉不得超出容器宽度");
-	assert.equal(sel.props.style.flex, "1 1 0", "下拉应占据剩余宽度而不是按内容撑开");
+
+	// 关键：原生下拉弹出层的宽度由最长 option 决定，只约束 select 盒宽挡不住，
+	// 所以选项文本本身必须截断（完整内容在 title 上）。
+	const opts = find(opened, (n) => n.type === "option");
+	const real = opts.filter((o) => (o.props?.value ?? "") !== "");
+	assert.ok(real.length > 0, "应有真实标签组选项");
+	for (const o of real) {
+		const label = texts(o).join("");
+		assert.ok(label.length <= 61, `选项文本应被截断（当前 ${label.length} 字）：${label}`);
+		assert.ok(String(o.props.title ?? "").length >= label.replace(/…$/, "").length, "完整内容应保留在 title 上");
+	}
 });
 
 test("tag 设置弹窗：标签区与校验结果区各有自己的滚动上限（#8）", async () => {
@@ -879,6 +892,6 @@ test("tag 设置弹窗：标签区与校验结果区各有自己的滚动上限�
 
 	const boxed = find(opened, (n) => n.props?.style?.overflowY === "auto" && typeof n.props?.style?.maxHeight === "string");
 	const caps = boxed.map((n) => n.props.style.maxHeight);
-	assert.ok(caps.includes("180px"), "「已有标签」区应有自己的滚动上限（180px）");
+	assert.ok(caps.includes("240px"), "「已有标签」区应有自己的滚动上限（240px）");
 	assert.ok(caps.includes("120px"), "校验/解析结果区应有自己的滚动上限（120px）");
 });
