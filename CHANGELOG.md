@@ -1,3 +1,32 @@
+## 0.1.20 — 2026-11-14 主题配色对齐宿主（#7）
+
+插件自绘弹窗原先引用 `--theme-bg-secondary` / `--theme-bg-tertiary` / `--theme-border`
+这一组变量，DSH 0.2.2-rc.3 的 app.asar 里**这三个名字出现 0 次**（逐字节扫描确认），
+于是 33 处 `var(...)` 全部落到写死的深色兜底，插件从不跟随宿主主题。
+
+两个症状同源：
+
+- **深色**：「添加标签组」下拉的选项文字静止时不可见，hover 才显示 —— 原生
+  `<select>/<option>` 由浏览器/系统层绘制，不吃 React 的 `color: inherit`。
+- **浅色**：宿主把文字刷成黑色，插件背景仍锁在 `#1a1f2e`，整屏不可读。
+
+### 修复
+
+- 33 处 `var(--theme-*)` 全部换成宿主真实的 `--dsw-alias-*`：背景用
+  `bg-layer-1` / `bg-layer-2`，边框用 `border-l1` / `border-l2`，遮罩用 `bg-mask-1`。
+- 硬编码灰阶与状态色改用语义 token：`#888` → `label-secondary`，`#e74c3c` →
+  `state-error-primary`，`#2ecc71` → `state-success-primary`，`#e67e22`/`#e6a23c` →
+  `state-warn-primary`；橙色半透明底改用 `color-mix(in srgb, … 12%, transparent)`，
+  浅色下同样成立。
+- 弹窗阴影改用 `--dsw-elevation-prominent`（保留原 rgba 作兜底）。
+- 原生 `select` 与每个 `option` 显式给前景与背景（`label-primary` / `bg-layer-2`），
+  不再依赖 inherit 与 UA 皮肤。
+- 新增 `tests/theme-tokens.test.mjs`：锁死「不许出现 `--theme-*`」「每个 `--dsw-*`
+  都在宿主白名单内」「弹窗不得写死深色背景」「select/option 必须显式配色」四条。
+- `tests/__page-render.mjs` 的 `RED` 断言由写死色值改为 `state-error-primary` 语义。
+
+270 项测试全绿。
+
 ## 0.1.19 — 2026-11-12 生命周期与安全加固（Cordis 所有权审计）
 
 一轮针对宿主侧所有权与生命周期的专项审计。功能行为不变，改动集中在资源的取得、
