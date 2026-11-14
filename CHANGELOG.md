@@ -1,3 +1,27 @@
+## 0.1.21 — 2026-11-14 「tag 设置」弹窗不再撑破边界（#8）
+
+标签多（本机 59 个）或表达式长时，弹窗被内容撑开：标签组下拉横向顶出外框，
+底部语法说明被推出可视区。三处布局约束缺失：
+
+- 弹窗只用了 `modalBox` 的 `maxHeight: 82vh`，**没有 `height`**；
+- 「已有标签」chips 容器与校验/解析结果区都没有滚动容器；
+- `select` 作为 flex 子项，`min-width` 默认 `auto`，按长选项文本撑宽。
+
+### 修复
+
+- 弹窗写死 `height: "82vh"` + `overflowY: "auto"` + `overflowX: "hidden"`：
+  高度恒定，超长内容只在弹窗内滚动，不会画到边框外。（与「管理标签」双列浮层
+  同样的处理，见该处注释。）
+- `select` 给 `flex: "1 1 0"` + `minWidth: 0` + `maxWidth: "100%"`：允许收缩、
+  占剩余宽度，不再按内容撑开。
+- 「已有标签」chips 容器 `maxHeight: 180px; overflowY: auto`；校验/解析结果区
+  `maxHeight: 120px; overflowY: auto`。
+
+### 验证
+
+`tests/__manage-render.mjs` 新增 3 条布局测试：弹窗定高且纵向溢出留在内部、
+下拉带 `minWidth: 0` 与 `maxWidth: 100%`、两个内容区各有滚动上限。全套 273 项通过。
+
 ## 0.1.20 — 2026-11-14 主题配色对齐宿主（#7）
 
 插件自绘弹窗原先引用 `--theme-bg-secondary` / `--theme-bg-tertiary` / `--theme-border`

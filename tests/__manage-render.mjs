@@ -818,3 +818,67 @@ test("下发完成后回到主界面并提示实际写入数", async () => {
 	assert.equal(find(after, (n) => n.props?.["data-skill-tag-push"] === "1").length, 1);
 });
 
+
+// ── 「tag 设置」弹窗布局：不得撑破边界（#8）────────────────────────────────
+//
+// 现象：标签组下拉横向顶出弹窗；标签多/表达式长时，底部语法说明被推出可视区。
+// 根因三处：① 弹窗只有 maxHeight、没有确定高度，内容一多整窗被撑开；
+// ② 「已有标签」与校验结果区没有各自的滚动容器；③ select 作为 flex 子项，
+// min-width 默认 auto，按长选项文本撑宽，把整行顶出弹窗。
+
+function openSettingsForLayout() {
+	const rt = makeRuntime();
+	const { sandbox, box } = load();
+	box.fetch = makeFetcher({ calls: [] });
+	let Dialog = null;
+	let helpers = null;
+	sandbox.window.__ModuleLoader__.load = ({ factory }) => {
+		const exp = factory((n) => (n === "react" ? rt.react : {}));
+		helpers = exp.__test;
+		exp.apply({
+			effect: (fn) => fn(),
+			slots: { inject: (_n, fn) => fn(), register: (o, C) => { if (o.name === "shell.overlay") Dialog = C; } },
+		});
+	};
+	vm.runInNewContext(SOURCE, sandbox, { filename: "lib/client.js" });
+	helpers.manageSet({ open: true, workspaceId: "ws-1" });
+	return { rt, box, Dialog, getHelpers: () => helpers };
+}
+
+test("tag 设置弹窗：定高而非只靠 maxHeight，纵向溢出留在弹窗内（#8）", async () => {
+	const { rt, box, Dialog } = openSettingsForLayout();
+	const tree = await rt.settle(Dialog, {}, 8, box);
+	btnByText(tree, "tag 设置")[0].props.onClick();
+	const opened = await rt.settle(Dialog, {}, 8, box);
+
+	const modal = find(opened, (n) => n.props?.style?.width === "760px")[0];
+	assert.ok(modal, "应渲染 tag 设置弹窗");
+	assert.equal(modal.props.style.height, "82vh", "弹窗必须定高，不能只靠 maxHeight 被内容撑开");
+	assert.equal(modal.props.style.overflowY, "auto", "内容超长时应在弹窗内滚动，而不是画到边框外");
+	assert.equal(modal.props.style.overflowX, "hidden", "长名称不得造成横向溢出");
+});
+
+test("tag 设置弹窗：标签组下拉可收缩，不按长文本撑宽（#8）", async () => {
+	const { rt, box, Dialog } = openSettingsForLayout();
+	const tree = await rt.settle(Dialog, {}, 8, box);
+	btnByText(tree, "tag 设置")[0].props.onClick();
+	const opened = await rt.settle(Dialog, {}, 8, box);
+
+	const sel = find(opened, (n) => n.type === "select")[0];
+	assert.ok(sel, "应有标签组下拉");
+	assert.equal(sel.props.style.minWidth, 0, "flex 子项必须 minWidth:0 才肯收缩（默认 auto 会按内容撑开）");
+	assert.equal(sel.props.style.maxWidth, "100%", "下拉不得超出容器宽度");
+	assert.equal(sel.props.style.flex, "1 1 0", "下拉应占据剩余宽度而不是按内容撑开");
+});
+
+test("tag 设置弹窗：标签区与校验结果区各有自己的滚动上限（#8）", async () => {
+	const { rt, box, Dialog } = openSettingsForLayout();
+	const tree = await rt.settle(Dialog, {}, 8, box);
+	btnByText(tree, "tag 设置")[0].props.onClick();
+	const opened = await rt.settle(Dialog, {}, 8, box);
+
+	const boxed = find(opened, (n) => n.props?.style?.overflowY === "auto" && typeof n.props?.style?.maxHeight === "string");
+	const caps = boxed.map((n) => n.props.style.maxHeight);
+	assert.ok(caps.includes("180px"), "「已有标签」区应有自己的滚动上限（180px）");
+	assert.ok(caps.includes("120px"), "校验/解析结果区应有自己的滚动上限（120px）");
+});
